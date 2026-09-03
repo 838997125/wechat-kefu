@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 运行时数据（首次启动自动生成）
+config.json
+data/
+logs/
+wxauto_logs/
+wxautox文件下载/
+
+# 打包产物
+build/venv/
+build/kefu-wechat/
+dist/
+*.spec
+
+# 临时文件
+*.tmp
+*.log

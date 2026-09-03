@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>客服微信助手 · 管理面板</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", -apple-system, sans-serif; background: #f0f2f5; color: #1f2329; font-size: 14px; }
+  header { background: #07c160; color: #fff; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  .status-pill { background: rgba(255,255,255,.22); border-radius: 20px; padding: 4px 14px; font-size: 13px; }
+  .layout { display: flex; min-height: calc(100vh - 56px); }
+  nav { width: 160px; background: #fff; border-right: 1px solid #e5e6eb; padding: 12px 0; }
+  nav button { display: block; width: 100%; text-align: left; padding: 12px 22px; border: none; background: none; cursor: pointer; font-size: 14px; color: #4e5969; }
+  nav button:hover { background: #f2f3f5; }
+  nav button.active { background: #e8f7ee; color: #07c160; font-weight: 600; border-right: 3px solid #07c160; }
+  main { flex: 1; padding: 24px; overflow-y: auto; }
+  .page { display: none; }
+  .page.active { display: block; }
+  .card { background: #fff; border-radius: 10px; padding: 20px 24px; margin-bottom: 18px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .card h2 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; }
+  .card h3 { font-size: 14px; margin: 14px 0 8px; color: #4e5969; }
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 8px; }
+  .stat { background: #f7f8fa; border-radius: 8px; padding: 16px; }
+  .stat .v { font-size: 26px; font-weight: 700; color: #07c160; }
+  .stat .l { color: #86909c; font-size: 13px; margin-top: 4px; }
+  button.btn { padding: 7px 18px; border-radius: 6px; border: 1px solid #d0d3d6; background: #fff; cursor: pointer; font-size: 13px; }
+  button.btn:hover { border-color: #07c160; color: #07c160; }
+  button.btn.primary { background: #07c160; color: #fff; border-color: #07c160; }
+  button.btn.primary:hover { opacity: .9; }
+  button.btn.danger { color: #f53f3f; border-color: #f53f3f; }
+  button.btn.sm { padding: 3px 10px; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #f0f1f3; font-size: 13px; vertical-align: top; }
+  th { color: #86909c; font-weight: 500; background: #fafbfc; }
+  input[type=text], input[type=number], input[type=password], select, textarea {
+    width: 100%; padding: 7px 10px; border: 1px solid #d0d3d6; border-radius: 6px; font-size: 13px; font-family: inherit; }
+  textarea { min-height: 70px; resize: vertical; }
+  label.field { display: block; margin-bottom: 12px; }
+  label.field .lab { display: block; color: #4e5969; margin-bottom: 5px; font-size: 13px; }
+  .row { display: flex; gap: 14px; }
+  .row > * { flex: 1; }
+  .hint { color: #86909c; font-size: 12px; margin-top: 4px; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px; }
+  .tag.green { background: #e8f7ee; color: #07c160; }
+  .tag.gray { background: #f2f3f5; color: #86909c; }
+  .tag.red { background: #ffece8; color: #f53f3f; }
+  .rule-item { border: 1px solid #e5e6eb; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
+  .rule-item .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .rule-item .head b { font-size: 14px; }
+  .rule-item .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .toast { position: fixed; top: 70px; right: 24px; background: #1f2329; color: #fff; padding: 10px 20px; border-radius: 8px; opacity: 0; transition: opacity .3s; z-index: 99; }
+  .toast.show { opacity: .92; }
+  .logbox { background: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; font-size: 12px; padding: 12px; border-radius: 8px; height: 340px; overflow-y: auto; white-space: pre-wrap; }
+  .msg-chat { color: #07c160; font-weight: 600; }
+  .msg-self { color: #165dff; }
+  .reply-line { color: #f53f3f; font-size: 12px; }
+  .switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .switch input { width: auto; }
+  .at-list { font-size: 12px; color: #86909c; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🤖 客服微信助手</h1>
+  <span class="status-pill" id="pill">加载中…</span>
+</header>
+<div class="layout">
+  <nav>
+    <button data-page="status" class="active">📊 运行状态</button>
+    <button data-page="chats">💬 监听会话</button>
+    <button data-page="rules">⚡ 关键词规则</button>
+    <button data-page="welcome">🎉 新人欢迎</button>
+    <button data-page="ai">🧠 AI 设置</button>
+    <button data-page="messages">📝 消息记录</button>
+    <button data-page="settings">⚙️ 系统设置</button>
+  </nav>
+  <main>
+    <!-- 运行状态 -->
+    <div class="page active" id="page-status">
+      <div class="card">
+        <h2>运行状态
+          <span>
+            <button class="btn" id="btn-pause">暂停</button>
+            <button class="btn" id="btn-resume">恢复</button>
+          </span>
+        </h2>
+        <div class="stat-grid">
+          <div class="stat"><div class="v" id="st-msgs">-</div><div class="l">今日消息</div></div>
+          <div class="stat"><div class="v" id="st-replies">-</div><div class="l">今日回复</div></div>
+          <div class="stat"><div class="v" id="st-uptime">-</div><div class="l">运行时长</div></div>
+          <div class="stat"><div class="v" id="st-chats">-</div><div class="l">监听会话</div></div>
+        </div>
+        <p class="hint" id="st-detail"></p>
+      </div>
+      <div class="card">
+        <h2>实时日志</h2>
+        <div class="logbox" id="logbox"></div>
+      </div>
+    </div>
+
+    <!-- 监听会话 -->
+    <div class="page" id="page-chats">
+      <div class="card">
+        <h2>监听会话
+          <button class="btn primary" id="btn-scan">🔄 从微信会话列表读取</button>
+        </h2>
+        <p class="hint">点击「从微信会话列表读取」会短暂切换微信窗口拉取当前会话；勾选要监听的群/好友后保存。客服场景建议只监听需要自动回复的群。</p>
+        <div id="scan-result" style="margin-top:14px"></div>
+        <h3>当前监听列表</h3>
+        <table><thead><tr><th>名称</th><th>类型</th><th style="width:90px">启用</th><th style="width:90px">操作</th></tr></thead>
+        <tbody id="chats-tbody"></tbody></table>
+        <h3>手动添加</h3>
+        <div class="row">
+          <input type="text" id="add-chat-name" placeholder="群聊/好友名称（必须与微信显示完全一致）">
+          <select id="add-chat-type" style="max-width:140px"><option value="group">群聊</option><option value="dm">私聊</option></select>
+          <button class="btn primary" id="btn-add-chat" style="max-width:120px">添加</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 关键词规则 -->
+    <div class="page" id="page-rules">
+      <div class="card">
+        <h2>关键词规则
+          <button class="btn primary" id="btn-add-rule">➕ 新增规则</button>
+        </h2>
+        <p class="hint">命中规则即自动回复，不调用 AI。多条回复会逐条发送（模拟真人连发）。<br>
+        @ 对象：<b>asker</b> = @提问的人；<b>none</b> = 不@；也可填群成员昵称固定 @某人。回复内容可用 <b>{sender}</b> 代表提问人昵称。</p>
+        <div id="rules-box" style="margin-top:14px"></div>
+      </div>
+    </div>
+
+    <!-- 新人欢迎 -->
+    <div class="page" id="page-welcome">
+      <div class="card">
+        <h2>新人入群欢迎语</h2>
+        <label class="field"><span class="lab"><label class="switch"><input type="checkbox" id="wc-enabled"> 启用新人欢迎</label></span></label>
+        <label class="field"><span class="lab">生效群聊（留空 = 所有监听群；多个用英文逗号分隔）</span>
+          <input type="text" id="wc-chats" placeholder="例如：客服一群,客服二群"></label>
+        <label class="field"><span class="lab">欢迎语内容（{name} = 新成员昵称）</span>
+          <textarea id="wc-message" rows="3"></textarea></label>
+        <label class="field"><span class="lab"><label class="switch"><input type="checkbox" id="wc-at"> 欢迎时 @ 新成员</label></span></label>
+        <button class="btn primary" id="btn-save-welcome">保存</button>
+      </div>
+    </div>
+
+    <!-- AI 设置 -->
+    <div class="page" id="page-ai">
+      <div class="card">
+        <h2>AI 智能回复（可选）</h2>
+        <p class="hint">关键词规则未命中时才走 AI。支持任何 OpenAI 兼容接口（DeepSeek、通义、Kimi、GPT 等）。配置保存在本机，不上传。</p>
+        <label class="field"><span class="lab"><label class="switch"><input type="checkbox" id="ai-enabled"> 启用 AI 回复</label></span></label>
+        <div class="row">
+          <label class="field"><span class="lab">触发方式</span>
+            <select id="ai-trigger"><option value="at">仅群里 @机器人（私聊始终回复）</option><option value="all">所有未命中规则的消息</option></select></label>
+          <label class="field"><span class="lab">模型</span><input type="text" id="ai-model" placeholder="deepseek-chat"></label>
+        </div>
+        <label class="field"><span class="lab">接口地址（OpenAI 兼容，到 /v1）</span><input type="text" id="ai-base" placeholder="https://api.deepseek.com/v1"></label>
+        <label class="field"><span class="lab">API Key</span><input type="password" id="ai-key" placeholder="sk-..."></label>
+        <label class="field"><span class="lab">系统提示词（客服人设、语气、禁答规则）</span><textarea id="ai-sysp" rows="4"></textarea></label>
+        <label class="field"><span class="lab">用户提示词模板（可用 {chat} {sender} {text}）</span><textarea id="ai-userp" rows="3"></textarea></label>
+        <div class="row">
+          <label class="field"><span class="lab">温度（0~1，越低越稳定）</span><input type="number" id="ai-temp" step="0.1" min="0" max="1"></label>
+          <label class="field"><span class="lab">对话记忆轮数（每个会话）</span><input type="number" id="ai-mem" min="0" max="50"></label>
+        </div>
+        <button class="btn primary" id="btn-save-ai">保存配置</button>
+        <button class="btn" id="btn-test-ai">🔌 测试连接</button>
+        <span class="hint" id="ai-test-result"></span>
+      </div>
+    </div>
+
+    <!-- 消息记录 -->
+    <div class="page" id="page-messages">
+      <div class="card">
+        <h2>消息记录
+          <button class="btn" id="btn-refresh-msgs">刷新</button>
+        </h2>
+        <table><thead><tr><th style="width:150px">时间</th><th style="width:120px">会话</th><th style="width:90px">发送人</th><th>内容</th></tr></thead>
+        <tbody id="msgs-tbody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- 系统设置 -->
+    <div class="page" id="page-settings">
+      <div class="card">
+        <h2>系统设置</h2>
+        <label class="field"><span class="lab">机器人昵称（群里 @ 识别用，多个用英文逗号分隔，一般填机器人微信号的群昵称）</span>
+          <input type="text" id="set-botnames"></label>
+        <div class="row">
+          <label class="field"><span class="lab">回复随机延时（秒，起）</span><input type="number" id="set-dmin" step="0.5" min="0"></label>
+          <label class="field"><span class="lab">回复随机延时（秒，止）</span><input type="number" id="set-dmax" step="0.5" min="0"></label>
+          <label class="field"><span class="lab">每分钟每群回复上限</span><input type="number" id="set-limit" min="1"></label>
+        </div>
+        <div class="row">
+          <label class="field"><span class="lab">长消息拆条字数</span><input type="number" id="set-split" min="200"></label>
+          <label class="field"><span class="lab">轮询间隔（秒）</span><input type="number" id="set-poll" step="0.5" min="0.5"></label>
+        </div>
+        <label class="field"><span class="lab"><label class="switch"><input type="checkbox" id="set-atsender"> AI 群回复时自动 @ 提问人</label></span></label>
+        <button class="btn primary" id="btn-save-settings">保存设置</button>
+      </div>
+      <div class="card">
+        <h2>手动发消息（测试用）</h2>
+        <div class="row">
+          <input type="text" id="send-chat" placeholder="会话名称">
+          <input type="text" id="send-text" placeholder="要发送的内容">
+          <button class="btn" id="btn-send" style="max-width:120px">发送</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let cfg = null;
+const $ = id => document.getElementById(id);
+function toast(t){ const e=$('toast'); e.textContent=t; e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2200); }
+function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// ---- 导航 ----
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  $('page-'+b.dataset.page).classList.add('active');
+  if(b.dataset.page==='messages') loadMessages();
+  if(b.dataset.page==='status') refreshLogs();
+});
+
+// ---- 配置 ----
+async function loadConfig(){
+  cfg = await (await fetch('/api/config')).json();
+  renderChats(); renderRules(); renderWelcome(); renderAI(); renderSettings();
+}
+async function saveConfig(){
+  const r = await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+  const j = await r.json();
+  j.ok ? toast('已保存并生效') : toast('保存失败: '+j.error);
+  return j.ok;
+}
+
+// ---- 状态 ----
+function fmtUptime(s){ const h=Math.floor(s/3600),m=Math.floor(s%3600/60); return (h?h+'小时':'')+m+'分'; }
+async function refreshStatus(){
+  try{
+    const s = await (await fetch('/api/status')).json();
+    $('pill').textContent = s.wechat_ready ? ('● 微信已连接 · '+(s.paused?'已暂停':'运行中')) : '○ 微信未连接';
+    $('pill').style.background = s.wechat_ready && !s.paused ? 'rgba(255,255,255,.22)' : 'rgba(0,0,0,.35)';
+    $('st-msgs').textContent = s.messages_today ?? '-';
+    $('st-replies').textContent = s.replies_today ?? '-';
+    $('st-uptime').textContent = s.uptime_sec ? fmtUptime(s.uptime_sec) : '-';
+    $('st-chats').textContent = (s.chats||[]).length;
+    $('st-detail').textContent = `账号：${s.account?.display_name||'-'}（${s.account?.region||''}）｜规则：${s.rules_enabled} 条｜AI：${s.ai_enabled?'开启':'关闭'}｜状态：${s.status}`;
+  }catch(e){}
+}
+async function refreshLogs(){
+  try{
+    const j = await (await fetch('/api/logs?lines=120')).json();
+    $('logbox').textContent = (j.logs||[]).join('\n');
+    $('logbox').scrollTop = $('logbox').scrollHeight;
+  }catch(e){}
+}
+$('btn-pause').onclick = async()=>{ await fetch('/api/bot/pause',{method:'POST'}); toast('已暂停'); refreshStatus(); };
+$('btn-resume').onclick = async()=>{ await fetch('/api/bot/resume',{method:'POST'}); toast('已恢复'); refreshStatus(); };
+
+// ---- 监听会话 ----
+function renderChats(){
+  const tb = $('chats-tbody'); tb.innerHTML='';
+  cfg.chats.forEach((c,i)=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${esc(c.name)}</td><td>${c.type==='group'?'群聊':'私聊'}</td>
+      <td><label class="switch"><input type="checkbox" ${c.enabled!==false?'checked':''}></label></td>
+      <td><button class="btn danger sm">删除</button></td>`;
+    tr.querySelector('input').onchange = e=>{ c.enabled = e.target.checked; saveConfig(); };
+    tr.querySelector('button').onclick = ()=>{ cfg.chats.splice(i,1); saveConfig().then(renderChats); };
+    tb.appendChild(tr);
+  });
+}
+$('btn-add-chat').onclick = ()=>{
+  const name = $('add-chat-name').value.trim(); if(!name) return toast('请填写名称');
+  if(cfg.chats.some(c=>c.name===name)) return toast('已存在');
+  cfg.chats.push({name, type:$('add-chat-type').value, enabled:true});
+  $('add-chat-name').value=''; saveConfig().then(renderChats);
+};
+$('btn-scan').onclick = async ()=>{
+  $('scan-result').innerHTML = '<span class="hint">正在读取微信会话列表（会短暂切换微信窗口）…</span>';
+  const j = await (await fetch('/api/scan_sessions',{method:'POST'})).json();
+  if(!j.ok){ $('scan-result').innerHTML = '<span class="tag red">'+esc(j.error||'读取失败')+'</span>'; return; }
+  let html = '<table><thead><tr><th>会话</th><th>最新消息</th><th>未读</th><th style="width:110px">操作</th></tr></thead><tbody>';
+  j.sessions.forEach(s=>{
+    html += `<tr><td>${esc(s.name)}</td><td>${esc((s.content||'').slice(0,40))}</td>
+      <td>${s.new_count?`<span class="tag red">${s.new_count}</span>`:''}</td>
+      <td>${s.monitored?'<span class="tag green">已监听</span>':`<button class="btn primary sm" data-add="${esc(s.name)}">加监听</button>`}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  $('scan-result').innerHTML = html;
+  $('scan-result').querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>{
+    const name = b.dataset.add;
+    if(!cfg.chats.some(c=>c.name===name)) cfg.chats.push({name, type:'group', enabled:true});
+    saveConfig().then(()=>{ renderChats(); b.outerHTML='<span class="tag green">已监听</span>'; });
+  });
+};
+
+// ---- 规则 ----
+function renderRules(){
+  const box = $('rules-box'); box.innerHTML='';
+  cfg.rules.forEach((r,idx)=>{
+    const div = document.createElement('div');
+    div.className='rule-item';
+    div.innerHTML = `
+      <div class="head">
+        <span><input type="checkbox" ${r.enabled!==false?'checked':''} style="width:auto"> <b>${esc(r.name||'未命名规则')}</b></span>
+        <span><button class="btn danger sm" data-del="${idx}">删除</button></span>
+      </div>
+      <div class="grid">
+        <label class="field"><span class="lab">规则名称</span><input class="f-name" value="${esc(r.name||'')}"></label>
+        <label class="field"><span class="lab">生效范围</span>
+          <select class="f-scope">
+            <option value="all" ${r.scope==='all'?'selected':''}>全部会话</option>
+            <option value="group" ${r.scope==='group'?'selected':''}>仅群聊</option>
+            <option value="dm" ${r.scope==='dm'?'selected':''}>仅私聊</option></select></label>
+        <label class="field"><span class="lab">关键词（逗号分隔）</span><input class="f-kw" value="${esc((r.keywords||[]).join(','))}"></label>
+        <label class="field"><span class="lab">匹配方式</span>
+          <select class="f-match">
+            <option value="any" ${r.match==='any'?'selected':''}>包含任一关键词</option>
+            <option value="all" ${r.match==='all'?'selected':''}>包含全部关键词</option>
+            <option value="exact" ${r.match==='exact'?'selected':''}>完全等于关键词</option>
+            <option value="regex" ${r.match==='regex'?'selected':''}>正则表达式</option></select></label>
+        <label class="field"><span class="lab">@ 对象（asker=@提问人 / none=不@ / 昵称，逗号分隔）</span>
+          <input class="f-at" value="${esc((r.at||['none']).join(','))}"></label>
+        <label class="field"><span class="lab">限定会话（留空不限，逗号分隔）</span>
+          <input class="f-chats" value="${esc((r.chats||[]).join(','))}"></label>
+      </div>
+      <label class="field"><span class="lab">回复内容（多条 = 连发多条，一行一条）</span>
+        <textarea class="f-replies" rows="3">${esc((r.replies||[]).join('\n'))}</textarea></label>
+      <label class="field"><span class="lab"><label class="switch"><input type="checkbox" class="f-requireat" ${r.require_at?'checked':''}> 必须 @机器人 才触发</label></span></label>`;
+    div.querySelector('input[type=checkbox]').onchange = e=>{ r.enabled=e.target.checked; };
+    div.querySelector('.f-name').oninput = e=>r.name=e.target.value;
+    div.querySelector('.f-scope').onchange = e=>r.scope=e.target.value;
+    div.querySelector('.f-kw').oninput = e=>r.keywords=e.target.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+    div.querySelector('.f-match').onchange = e=>r.match=e.target.value;
+    div.querySelector('.f-at').oninput = e=>r.at=e.target.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+    div.querySelector('.f-chats').oninput = e=>r.chats=e.target.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+    div.querySelector('.f-replies').oninput = e=>r.replies=e.target.value.split('\n').map(s=>s).filter(s=>s.trim());
+    div.querySelector('.f-requireat').onchange = e=>r.require_at=e.target.checked;
+    div.querySelector('[data-del]').onclick = ()=>{ cfg.rules.splice(idx,1); saveConfig().then(renderRules); };
+    box.appendChild(div);
+  });
+}
+$('btn-add-rule').onclick = ()=>{
+  cfg.rules.push({id:'r_'+Date.now().toString(36), name:'新规则', enabled:true, scope:'all', chats:[],
+    keywords:['关键词'], match:'any', require_at:false, replies:['回复内容'], at:['none']});
+  renderRules(); toast('已添加，编辑后记得页面上任何「保存」按钮或切换规则即自动保存');
+};
+// 规则编辑后失焦自动保存
+document.addEventListener('focusout', e=>{
+  if(e.target.closest('#rules-box') && cfg) saveConfig();
+});
+
+// ---- 欢迎语 ----
+function renderWelcome(){
+  const w = cfg.welcome||{};
+  $('wc-enabled').checked = !!w.enabled;
+  $('wc-chats').value = (w.chats||[]).join(',');
+  $('wc-message').value = w.message||'';
+  $('wc-at').checked = w.at_newcomer!==false;
+}
+$('btn-save-welcome').onclick = ()=>{
+  cfg.welcome = {enabled:$('wc-enabled').checked, chats:$('wc-chats').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean),
+    message:$('wc-message').value, at_newcomer:$('wc-at').checked};
+  saveConfig();
+};
+
+// ---- AI ----
+function renderAI(){
+  const a = cfg.ai||{};
+  $('ai-enabled').checked = !!a.enabled;
+  $('ai-trigger').value = a.trigger||'at';
+  $('ai-model').value = a.model||'';
+  $('ai-base').value = a.base_url||'';
+  $('ai-key').value = a.api_key||'';
+  $('ai-sysp').value = a.system_prompt||'';
+  $('ai-userp').value = a.user_prompt||'';
+  $('ai-temp').value = a.temperature??0.7;
+  $('ai-mem').value = a.memory_turns??10;
+}
+function collectAI(){
+  cfg.ai = {enabled:$('ai-enabled').checked, trigger:$('ai-trigger').value, model:$('ai-model').value.trim(),
+    base_url:$('ai-base').value.trim(), api_key:$('ai-key').value.trim(),
+    system_prompt:$('ai-sysp').value, user_prompt:$('ai-userp').value,
+    temperature:parseFloat($('ai-temp').value)||0.7, memory_turns:parseInt($('ai-mem').value)||0,
+    timeout_sec: cfg.ai?.timeout_sec||60};
+}
+$('btn-save-ai').onclick = ()=>{ collectAI(); saveConfig(); };
+$('btn-test-ai').onclick = async ()=>{
+  collectAI();
+  $('ai-test-result').textContent = '测试中…';
+  const j = await (await fetch('/api/ai/test',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ai:cfg.ai})})).json();
+  $('ai-test-result').textContent = j.ok ? ('✅ '+j.reply) : ('❌ '+j.error);
+};
+
+// ---- 系统设置 ----
+function renderSettings(){
+  const g = cfg.general||{};
+  $('set-botnames').value = (g.bot_names||[]).join(',');
+  $('set-dmin').value = g.reply_delay_min??1;
+  $('set-dmax').value = g.reply_delay_max??3;
+  $('set-limit').value = g.max_replies_per_minute??12;
+  $('set-split').value = g.split_length??1500;
+  $('set-poll').value = g.poll_interval_sec??1.5;
+  $('set-atsender').checked = g.at_sender!==false;
+}
+$('btn-save-settings').onclick = ()=>{
+  cfg.general = Object.assign({}, cfg.general, {
+    bot_names:$('set-botnames').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean),
+    reply_delay_min:parseFloat($('set-dmin').value)||0,
+    reply_delay_max:parseFloat($('set-dmax').value)||0,
+    max_replies_per_minute:parseInt($('set-limit').value)||12,
+    split_length:parseInt($('set-split').value)||1500,
+    poll_interval_sec:parseFloat($('set-poll').value)||1.5,
+    at_sender:$('set-atsender').checked});
+  saveConfig();
+};
+$('btn-send').onclick = async ()=>{
+  const chat=$('send-chat').value.trim(), text=$('send-text').value.trim();
+  if(!chat||!text) return toast('请填写会话和内容');
+  const j = await (await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({chat,text})})).json();
+  toast(j.ok?'已发送':'发送失败');
+};
+
+// ---- 消息记录 ----
+async function loadMessages(){
+  const j = await (await fetch('/api/messages?limit=300')).json();
+  const tb=$('msgs-tbody'); tb.innerHTML='';
+  (j.messages||[]).forEach(m=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML = `<td>${esc(m.ts)}</td><td class="msg-chat">${esc(m.chat)}</td>
+      <td class="${m.attr==='self'?'msg-self':''}">${esc(m.attr==='self'?'(本机)':m.sender)}</td>
+      <td>${esc(m.content)}${m.replied?`<div class="reply-line">↳ ${esc(m.reply_src)}：${esc((m.reply_text||'').slice(0,80))}</div>`:''}</td>`;
+    tb.appendChild(tr);
+  });
+}
+$('btn-refresh-msgs').onclick = loadMessages;
+
+// ---- 启动 ----
+loadConfig();
+refreshStatus(); setInterval(refreshStatus, 5000);
+setInterval(refreshLogs, 6000);
+</script>
+</body>
+</html>

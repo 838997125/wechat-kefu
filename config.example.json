@@ -1,0 +1,49 @@
+{
+  "general": {
+    "bot_names": ["机器人在群里的昵称"],
+    "poll_interval_sec": 1.5,
+    "switch_wait_sec": 1.5,
+    "reply_delay_min": 1.0,
+    "reply_delay_max": 3.0,
+    "max_replies_per_minute": 12,
+    "split_length": 1500,
+    "record_self": true,
+    "at_sender": true,
+    "auto_open_panel": true
+  },
+  "chats": [
+    { "name": "示例客服群", "type": "group", "enabled": true }
+  ],
+  "rules": [
+    {
+      "id": "r_example_1",
+      "name": "示例-查快递",
+      "enabled": true,
+      "scope": "all",
+      "chats": [],
+      "keywords": ["快递", "单号", "物流", "查件"],
+      "match": "any",
+      "require_at": false,
+      "replies": ["亲~查快递请把【订单号】发在群里，客服马上帮您核实物流情况😊"],
+      "at": ["asker"]
+    }
+  ],
+  "welcome": {
+    "enabled": false,
+    "chats": [],
+    "message": "欢迎新成员进群🎉 有问题直接在群里留言，客服会尽快回复~",
+    "at_newcomer": true
+  },
+  "ai": {
+    "enabled": false,
+    "trigger": "at",
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "",
+    "model": "deepseek-chat",
+    "temperature": 0.7,
+    "timeout_sec": 60,
+    "memory_turns": 10,
+    "system_prompt": "你是一名专业、耐心的微信客服助手。回答简洁口语化，一次只说一件事；不确定的信息不要编造，引导客户留下订单号或联系方式。",
+    "user_prompt": "当前群聊：{chat}\n发送人：{sender}\n客户消息：{text}"
+  }
+}
