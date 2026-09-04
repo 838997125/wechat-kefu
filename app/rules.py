@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """规则引擎：关键词匹配 + @ 解析 + 回复动作生成。"""
+import random
 import re
 
 
@@ -78,11 +79,23 @@ def resolve_at(at_cfg, sender_name, chat_type):
 
 
 def render_replies(rule, sender_name):
-    """规则回复支持 {sender} 占位符；返回回复文本列表。"""
+    """规则回复支持 {sender} 占位符；返回全部回复文本列表。"""
     out = []
     for r in (rule.get('replies', []) or []):
         out.append(str(r).replace('{sender}', sender_name or '亲'))
     return [t for t in out if t.strip()]
+
+
+def choose_replies(rule, sender_name):
+    """按 reply_mode 决定实际发送的回复：
+    random（默认，防风控）：多条话术随机回一条；all：全部连发。
+    """
+    rendered = render_replies(rule, sender_name)
+    if not rendered:
+        return []
+    if rule.get('reply_mode', 'random') == 'all' or len(rendered) == 1:
+        return rendered
+    return [random.choice(rendered)]
 
 
 def split_text(text, max_len):

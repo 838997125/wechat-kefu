@@ -34,6 +34,12 @@
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #f0f1f3; font-size: 13px; vertical-align: top; }
   th { color: #86909c; font-weight: 500; background: #fafbfc; }
+  .msg-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; border-bottom: 2px solid #e5e6eb; }
+  .msg-tab { padding: 8px 14px; cursor: pointer; border: 1px solid #e5e6eb; border-bottom: none; border-radius: 8px 8px 0 0; background: #f7f8fa; font-size: 13px; color: #4e5969; white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+  .msg-tab.active { background: #07c160; color: #fff; border-color: #07c160; font-weight: 600; }
+  .msg-tab .cnt { font-size: 11px; opacity: .85; margin-left: 4px; }
+  .msg-pane { display: none; }
+  .msg-pane.active { display: block; }
   input[type=text], input[type=number], input[type=password], select, textarea {
     width: 100%; padding: 7px 10px; border: 1px solid #d0d3d6; border-radius: 6px; font-size: 13px; font-family: inherit; }
   textarea { min-height: 70px; resize: vertical; }
@@ -71,6 +77,7 @@
     <button data-page="status" class="active">📊 运行状态</button>
     <button data-page="chats">💬 监听会话</button>
     <button data-page="rules">⚡ 关键词规则</button>
+    <button data-page="routes">🔀 消息转发</button>
     <button data-page="welcome">🎉 新人欢迎</button>
     <button data-page="ai">🧠 AI 设置</button>
     <button data-page="messages">📝 消息记录</button>
@@ -91,6 +98,11 @@
           <div class="stat"><div class="v" id="st-replies">-</div><div class="l">今日回复</div></div>
           <div class="stat"><div class="v" id="st-uptime">-</div><div class="l">运行时长</div></div>
           <div class="stat"><div class="v" id="st-chats">-</div><div class="l">监听会话</div></div>
+        </div>
+        <div class="card" style="margin-top:14px;padding:10px 16px;background:#f7f8fa">
+          <span class="hint">最后收到消息：</span><b id="st-lastmsg">—</b>
+          <span id="st-heartbeat" class="tag" style="margin-left:8px"></span>
+          <div class="hint" style="margin-top:6px">若长时间无新消息且状态异常，可能是微信主窗口被关闭，机器人会尝试自动拉起；也请确认微信主窗口保持打开（可最小化，不要点×关闭）。</div>
         </div>
         <p class="hint" id="st-detail"></p>
       </div>
@@ -129,6 +141,27 @@
         <p class="hint">命中规则即自动回复，不调用 AI。多条回复会逐条发送（模拟真人连发）。<br>
         @ 对象：<b>asker</b> = @提问的人；<b>none</b> = 不@；也可填群成员昵称固定 @某人。回复内容可用 <b>{sender}</b> 代表提问人昵称。</p>
         <div id="rules-box" style="margin-top:14px"></div>
+      </div>
+    </div>
+
+    <!-- 消息转发（多群路由） -->
+    <div class="page" id="page-routes">
+      <div class="card">
+        <h2>🔀 多群消息转发
+          <span>
+            <button class="btn" id="btn-shadow">影子模式（只记录不发送）</button>
+          </span>
+        </h2>
+        <p class="hint" id="shadow-hint">影子模式下，机器人只记录"会把哪条消息转到哪个群"，<b>不会真的发送</b>。请在下方日志核对几天，确认转发准确后再关闭影子模式正式转发。</p>
+        <div id="route-list" style="margin-top:14px"></div>
+      </div>
+      <div class="card">
+        <h2>转发日志
+          <button class="btn" id="btn-refresh-routes">刷新</button>
+        </h2>
+        <p class="hint">影子=预演记录；sent=已发送；failed=发送失败。正式转发前请先确认影子日志准确。</p>
+        <table><thead><tr><th style="width:140px">时间</th><th>路由</th><th style="width:110px">源→目标</th><th style="width:110px">发送人/单号</th><th style="width:70px">状态</th><th>转发内容预览</th></tr></thead>
+        <tbody id="routes-tbody"></tbody></table>
       </div>
     </div>
 
@@ -177,8 +210,8 @@
         <h2>消息记录
           <button class="btn" id="btn-refresh-msgs">刷新</button>
         </h2>
-        <table><thead><tr><th style="width:150px">时间</th><th style="width:120px">会话</th><th style="width:90px">发送人</th><th>内容</th></tr></thead>
-        <tbody id="msgs-tbody"></tbody></table>
+        <div id="msg-tabs" class="msg-tabs"></div>
+        <div id="msg-tab-content"></div>
       </div>
     </div>
 
@@ -227,6 +260,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   $('page-'+b.dataset.page).classList.add('active');
   if(b.dataset.page==='messages') loadMessages();
   if(b.dataset.page==='status') refreshLogs();
+  if(b.dataset.page==='routes'){ renderRoutes(); loadRouteLogs(); }
 });
 
 // ---- 配置 ----
@@ -253,6 +287,17 @@ async function refreshStatus(){
     $('st-uptime').textContent = s.uptime_sec ? fmtUptime(s.uptime_sec) : '-';
     $('st-chats').textContent = (s.chats||[]).length;
     $('st-detail').textContent = `账号：${s.account?.display_name||'-'}（${s.account?.region||''}）｜规则：${s.rules_enabled} 条｜AI：${s.ai_enabled?'开启':'关闭'}｜状态：${s.status}`;
+    // 最后消息时间 + 监听心跳
+    const last = s.last_message_ts;
+    $('st-lastmsg').textContent = last ? last.slice(11) : '暂无';
+    const hb = $('st-heartbeat');
+    if(!last){ hb.textContent=''; }
+    else {
+      const gap = (Date.now() - new Date(last.replace(/-/g,'/')).getTime())/1000;
+      if(gap < 600){ hb.textContent='● 监听正常'; hb.className='tag green'; }
+      else if(gap < 1800){ hb.textContent='● 超过10分钟无新消息'; hb.className='tag'; }
+      else { hb.textContent='⚠ 监听可能卡住（30分钟无消息）'; hb.className='tag red'; }
+    }
   }catch(e){}
 }
 async function refreshLogs(){
@@ -333,7 +378,11 @@ function renderRules(){
         <label class="field"><span class="lab">限定会话（留空不限，逗号分隔）</span>
           <input class="f-chats" value="${esc((r.chats||[]).join(','))}"></label>
       </div>
-      <label class="field"><span class="lab">回复内容（多条 = 连发多条，一行一条）</span>
+      <label class="field"><span class="lab">多条回复方式（防风控建议：多写几条不同话术，随机回一条）</span>
+        <select class="f-mode">
+          <option value="random" ${(r.reply_mode||'random')==='random'?'selected':''}>随机回一条（推荐，话术多样）</option>
+          <option value="all" ${r.reply_mode==='all'?'selected':''}>全部连发（一行一条依次发出）</option></select></label>
+      <label class="field"><span class="lab">回复内容（一行一条；随机模式下每次从中挑一条）</span>
         <textarea class="f-replies" rows="3">${esc((r.replies||[]).join('\n'))}</textarea></label>
       <label class="field"><span class="lab"><label class="switch"><input type="checkbox" class="f-requireat" ${r.require_at?'checked':''}> 必须 @机器人 才触发</label></span></label>`;
     div.querySelector('input[type=checkbox]').onchange = e=>{ r.enabled=e.target.checked; };
@@ -343,6 +392,7 @@ function renderRules(){
     div.querySelector('.f-match').onchange = e=>r.match=e.target.value;
     div.querySelector('.f-at').oninput = e=>r.at=e.target.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
     div.querySelector('.f-chats').oninput = e=>r.chats=e.target.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+    div.querySelector('.f-mode').onchange = e=>r.reply_mode=e.target.value;
     div.querySelector('.f-replies').oninput = e=>r.replies=e.target.value.split('\n').map(s=>s).filter(s=>s.trim());
     div.querySelector('.f-requireat').onchange = e=>r.require_at=e.target.checked;
     div.querySelector('[data-del]').onclick = ()=>{ cfg.rules.splice(idx,1); saveConfig().then(renderRules); };
@@ -351,13 +401,50 @@ function renderRules(){
 }
 $('btn-add-rule').onclick = ()=>{
   cfg.rules.push({id:'r_'+Date.now().toString(36), name:'新规则', enabled:true, scope:'all', chats:[],
-    keywords:['关键词'], match:'any', require_at:false, replies:['回复内容'], at:['none']});
+    keywords:['关键词'], match:'any', require_at:false, reply_mode:'random', replies:['回复内容'], at:['none']});
   renderRules(); toast('已添加，编辑后记得页面上任何「保存」按钮或切换规则即自动保存');
 };
 // 规则编辑后失焦自动保存
 document.addEventListener('focusout', e=>{
   if(e.target.closest('#rules-box') && cfg) saveConfig();
 });
+
+// ---- 消息转发（多群路由） ----
+function renderRoutes(){
+  const r = cfg.routing || (cfg.routing = {shadow_mode:true, routes:[]});
+  $('btn-shadow').textContent = r.shadow_mode ? '🔒 影子模式开启中（点击关闭，开始真实转发）' : '✅ 正式转发中（点击切回影子模式）';
+  $('btn-shadow').className = 'btn ' + (r.shadow_mode ? '' : 'primary');
+  const box = $('route-list');
+  box.innerHTML = (r.routes||[]).filter(x=>x).map(rt => `
+    <div class="rule-item">
+      <div class="head"><b>${esc(rt.name||'未命名路由')}</b>
+        <label class="switch"><input type="checkbox" data-rt="${esc(rt.id)}" ${rt.enabled!==false?'checked':''}> 启用</label></div>
+      <div class="hint">源：${esc(rt.source)} → 目标：${esc(rt.target)} ｜ 模式：${rt.mode==='raw'?'纯原文':'加工话术'} ｜ 关键词：${esc((rt.keywords||[]).join('、'))}${(rt.require_sender_contains||[]).length?(' ｜ 只处理发送者含：'+esc(rt.require_sender_contains.join(','))):''}${(rt.exclude_sender_contains||[]).length?(' ｜ 排除发送者含：'+esc(rt.exclude_sender_contains.join(','))):''}</div>
+    </div>`).join('') || '<p class="hint">暂无路由规则（在 config.json 的 routing.routes 中配置）。</p>';
+  box.querySelectorAll('[data-rt]').forEach(cb=>cb.onchange=()=>{
+    const rt = (cfg.routing.routes||[]).find(x=>x.id===cb.dataset.rt);
+    if(rt){ rt.enabled = cb.checked; saveConfig().then(renderRoutes); }
+  });
+}
+$('btn-shadow').onclick = ()=>{
+  cfg.routing = cfg.routing || {routes:[]};
+  cfg.routing.shadow_mode = !cfg.routing.shadow_mode;
+  saveConfig().then(()=>{ renderRoutes(); toast(cfg.routing.shadow_mode?'已切回影子模式，只记录不发送':'影子模式已关闭，将开始真实转发！'); });
+};
+async function loadRouteLogs(){
+  const j = await (await fetch('/api/routes/logs?shadow=all&limit=200')).json();
+  const tb = $('routes-tbody'); tb.innerHTML='';
+  (j.logs||[]).forEach(l=>{
+    const tr=document.createElement('tr');
+    const st = l.shadow ? '<span class="tag gray">影子</span>' : (l.status==='sent'?'<span class="tag green">已发</span>':'<span class="tag red">失败</span>');
+    tr.innerHTML = `<td>${esc(l.ts)}</td><td>${esc(l.route_name)}</td>
+      <td>${esc((l.source_chat||'').slice(0,8))}→<br>${esc((l.target_chat||'').slice(0,8))}</td>
+      <td>${esc(l.sender||'')}<br><span class="hint">${esc(l.tracking_no||'')}</span></td>
+      <td>${st}</td><td>${esc(l.forward||l.original||'')}</td>`;
+    tb.appendChild(tr);
+  });
+}
+$('btn-refresh-routes').onclick = loadRouteLogs;
 
 // ---- 欢迎语 ----
 function renderWelcome(){
@@ -432,16 +519,51 @@ $('btn-send').onclick = async ()=>{
   toast(j.ok?'已发送':'发送失败');
 };
 
-// ---- 消息记录 ----
+// ---- 消息记录（按会话分 Tab） ----
+let msgData = { chats: [], byChat: {} };
 async function loadMessages(){
-  const j = await (await fetch('/api/messages?limit=300')).json();
-  const tb=$('msgs-tbody'); tb.innerHTML='';
-  (j.messages||[]).forEach(m=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML = `<td>${esc(m.ts)}</td><td class="msg-chat">${esc(m.chat)}</td>
-      <td class="${m.attr==='self'?'msg-self':''}">${esc(m.attr==='self'?'(本机)':m.sender)}</td>
-      <td>${esc(m.content)}${m.replied?`<div class="reply-line">↳ ${esc(m.reply_src)}：${esc((m.reply_text||'').slice(0,80))}</div>`:''}</td>`;
-    tb.appendChild(tr);
+  const j = await (await fetch('/api/messages?limit=500')).json();
+  // 按会话分组，保持最近活跃在前
+  const byChat = {};
+  (j.messages||[]).forEach(m=>{ (byChat[m.chat] = byChat[m.chat] || []).push(m); });
+  const chats = (j.chats||[]).map(c=>c.name).filter(n=>byChat[n]);
+  // j.chats 已按最近时间排序；补上可能未在 chats 列表的
+  Object.keys(byChat).forEach(n=>{ if(!chats.includes(n)) chats.push(n); });
+  msgData = { chats, byChat };
+  renderMsgTabs();
+}
+function renderMsgTabs(){
+  const tabs = $('msg-tabs'), content = $('msg-tab-content');
+  tabs.innerHTML=''; content.innerHTML='';
+  if(!msgData.chats.length){ content.innerHTML='<p class="hint">暂无消息记录。</p>'; return; }
+  // 短名显示（长群名截断）
+  const shortName = n => n.length>14 ? n.slice(0,13)+'…' : n;
+  msgData.chats.forEach((name, idx)=>{
+    const cnt = (msgData.byChat[name]||[]).length;
+    const t = document.createElement('div');
+    t.className = 'msg-tab' + (idx===0?' active':'');
+    t.innerHTML = `${esc(shortName(name))}<span class="cnt">${cnt}</span>`;
+    t.title = name;
+    t.onclick = ()=>{
+      tabs.querySelectorAll('.msg-tab').forEach(x=>x.classList.remove('active'));
+      content.querySelectorAll('.msg-pane').forEach(x=>x.classList.remove('active'));
+      t.classList.add('active');
+      $('msg-pane-'+idx).classList.add('active');
+    };
+    tabs.appendChild(t);
+    const pane = document.createElement('div');
+    pane.className = 'msg-pane' + (idx===0?' active':'');
+    pane.id = 'msg-pane-'+idx;
+    pane.innerHTML = `<table><thead><tr><th style="width:150px">时间</th><th style="width:110px">发送人</th><th>内容</th></tr></thead><tbody></tbody></table>`;
+    const tb = pane.querySelector('tbody');
+    (msgData.byChat[name]||[]).forEach(m=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML = `<td>${esc(m.ts)}</td>
+        <td class="${m.attr==='self'?'msg-self':''}">${esc(m.attr==='self'?'(本机)':m.sender)}</td>
+        <td>${esc(m.content)}${m.replied?`<div class="reply-line">↳ ${esc(m.reply_src)}：${esc((m.reply_text||'').slice(0,80))}</div>`:''}</td>`;
+      tb.appendChild(tr);
+    });
+    content.appendChild(pane);
   });
 }
 $('btn-refresh-msgs').onclick = loadMessages;

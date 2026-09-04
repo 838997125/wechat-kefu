@@ -8,11 +8,85 @@
   - 免费版无独立子窗口能力，回复也通过主窗口 ChatWith 后 SendMsg
 """
 import logging
+import os
 import re
+import subprocess
 import time
 from datetime import datetime
 
 log = logging.getLogger('kefu')
+
+
+def _wechat_exe_path():
+    """查找微信可执行文件路径（注册表/常见安装目录）。"""
+    candidates = [
+        r'D:\APPS\Weixin\Weixin.exe',
+        r'C:\Program Files\Tencent\Weixin\Weixin.exe',
+        r'C:\Program Files (x86)\Tencent\Weixin\Weixin.exe',
+        os.path.expandvars(r'%LOCALAPPDATA%\Programs\Tencent\Weixin\Weixin.exe'),
+    ]
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             r'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+                             0, winreg.KEY_READ)
+        i = 0
+        while True:
+            try:
+                sub = winreg.EnumKey(key, i)
+                i += 1
+                try:
+                    sk = winreg.OpenKey(key, sub)
+                    name = winreg.QueryValueEx(sk, 'DisplayName')[0]
+                    if isinstance(name, str) and name.strip() == '微信':
+                        loc = winreg.QueryValueEx(sk, 'InstallLocation')[0]
+                        exe = os.path.join(loc.strip('"'), 'Weixin.exe')
+                        if os.path.exists(exe):
+                            return exe
+                except OSError:
+                    pass
+            except OSError:
+                break
+    except Exception:
+        pass
+    return None
+
+
+def ensure_wechat_window():
+    """确保微信主窗口存在：进程在就激活，进程不在/无主窗口就启动微信 exe。
+    返回 True 表示已尝试确保。"""
+    try:
+        import psutil
+        exe = _wechat_exe_path()
+        wx_procs = [p for p in psutil.process_iter(['name']) if p.info['name'] and p.info['name'].lower().startswith('weixin')]
+        if not wx_procs:
+            # 微信进程不存在：启动
+            if exe:
+                log.info('微信进程不存在，自动启动微信…')
+                subprocess.Popen([exe], close_fds=True)
+                time.sleep(8)
+                return True
+            log.warning('未找到微信可执行文件，无法自动拉起')
+            return False
+        # 进程在：检查主窗口是否存在，无窗口则重新激活
+        has_window = False
+        for p in wx_procs:
+            try:
+                if p.info.get('num_handles', 0):
+                    pass
+            except Exception:
+                pass
+        # 简单策略：进程在但可能主窗口关闭（托盘），重新执行 exe 会唤起主窗口
+        if exe:
+            subprocess.Popen([exe], close_fds=True)
+            time.sleep(4)
+        return True
+    except Exception as e:
+        log.warning('自动拉起微信失败: %s', e)
+        return False
 
 
 class NormalizedMsg:
@@ -59,6 +133,7 @@ class WxDriver:
         self.account = None
         self._baseline = set()
         self._switch_wait = float(general_cfg.get('switch_wait_sec', 1.5))
+        self._fail_streak = 0   # 连续读取失败计数（用于自愈）
 
     # ---- 生命周期 ----
 
@@ -83,6 +158,10 @@ class WxDriver:
                 self.ready = False
                 if attempt >= retries:
                     raise
+                # 每 3 次重试尝试自动拉起微信主窗口（防止主窗口被关到托盘导致静默停摆）
+                if attempt % 3 == 1:
+                    log.warning('检测到微信未就绪，尝试自动拉起微信主窗口…')
+                    ensure_wechat_window()
                 log.warning('等待微信客户端就绪（%s），请确认微信 4.1.8.107 已登录且主窗口已打开… 第%d次重试',
                             str(e)[:80], attempt)
                 time.sleep(5)
@@ -125,13 +204,33 @@ class WxDriver:
                 name = getattr(s, 'name', '') or info.get('name', '')
                 if name:
                     result[name] = bool(info.get('isnew')) or int(info.get('new_count') or 0) > 0
+            self._fail_streak = 0  # 读取成功，重置失败计数
         except Exception as e:
-            log.warning('GetSession 失败: %s', e)
+            self._fail_streak += 1
+            log.warning('GetSession 失败（连续%d次）: %s', self._fail_streak, str(e)[:60])
+            # 连续失败说明微信主窗口可能被关：标记未就绪，触发自愈
+            if self._fail_streak >= 3:
+                self.ready = False
         return result
+
+    def heal_if_needed(self):
+        """运行中检测到微信连接丢失时自动拉起并重连。返回 True 表示已恢复。"""
+        if self.ready and self._fail_streak < 3:
+            return False
+        log.warning('检测到微信连接丢失，尝试自动拉起并重新连接…')
+        ensure_wechat_window()
+        try:
+            self.start(retries=1)
+            return self.ready
+        except Exception as e:
+            log.warning('自愈重连暂未成功: %s', str(e)[:80])
+            return False
 
     def poll(self, chats):
         """chats: [{name,type,enabled}]；返回 NormalizedMsg 列表。"""
         out = []
+        if not self.ready or self.wx is None:
+            return out
         unread = self._unread_map()
         for chat in chats:
             name, ctype = chat['name'], chat.get('type', 'group')

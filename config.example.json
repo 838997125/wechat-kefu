@@ -1,11 +1,11 @@
 {
   "general": {
     "bot_names": ["机器人在群里的昵称"],
-    "poll_interval_sec": 1.5,
+    "poll_interval_sec": 3.0,
     "switch_wait_sec": 1.5,
-    "reply_delay_min": 1.0,
-    "reply_delay_max": 3.0,
-    "max_replies_per_minute": 12,
+    "reply_delay_min": 3.0,
+    "reply_delay_max": 8.0,
+    "max_replies_per_minute": 8,
     "split_length": 1500,
     "record_self": true,
     "at_sender": true,
@@ -24,7 +24,11 @@
       "keywords": ["快递", "单号", "物流", "查件"],
       "match": "any",
       "require_at": false,
-      "replies": ["亲~查快递请把【订单号】发在群里，客服马上帮您核实物流情况😊"],
+      "reply_mode": "random",
+      "replies": [
+        "亲~查快递请把【订单号】发在群里，客服马上帮您核实物流情况😊",
+        "您好，麻烦提供一下订单号哦，这边马上为您查询~"
+      ],
       "at": ["asker"]
     }
   ],

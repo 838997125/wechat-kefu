@@ -1,0 +1,11 @@
+{
+  "name": "wecom-aibot-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "企业微信智能机器人（长连接模式）最小验证脚本：@机器人→收到回调→自动回复",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {}
+}

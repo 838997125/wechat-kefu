@@ -59,6 +59,14 @@ def main():
             {'id': 'r3', 'name': '长回复', 'enabled': True, 'scope': 'all', 'chats': [],
              'keywords': ['长文'], 'match': 'any', 'require_at': False,
              'replies': ['A' * 130], 'at': ['none']},
+            {'id': 'r4', 'name': '随机话术', 'enabled': True, 'scope': 'all', 'chats': [],
+             'keywords': ['问好'], 'match': 'any', 'require_at': False,
+             'reply_mode': 'random',
+             'replies': ['话术A', '话术B', '话术C'], 'at': ['none']},
+            {'id': 'r5', 'name': '连发模式', 'enabled': True, 'scope': 'all', 'chats': [],
+             'keywords': ['连发'], 'match': 'any', 'require_at': False,
+             'reply_mode': 'all',
+             'replies': ['第一条', '第二条'], 'at': ['none']},
         ],
         'welcome': {'enabled': False, 'chats': [], 'message': '欢迎 {name} 进群~', 'at_newcomer': True},
         'ai': {'enabled': False, 'trigger': 'at', 'base_url': '', 'api_key': '', 'model': '',
@@ -97,6 +105,25 @@ def main():
     n = len(fake.sent)
     bot._on_message(NormalizedMsg('测试群', 'group', '<己方客服H>', 'friend', 'text', '来段长文'))
     check('拆成 2 段发送', len(fake.sent) - n == 2, f'实际 {len(fake.sent)-n}')
+
+    print('5b) 多条话术随机回一条（防风控）:')
+    picked = set()
+    ok_each_one = True
+    for i in range(6):
+        n = len(fake.sent)
+        bot._on_message(NormalizedMsg('测试群', 'group', '<己方客服H>', 'friend', 'text', f'问好{i}'))
+        if len(fake.sent) != n + 1:
+            ok_each_one = False
+        else:
+            picked.add(fake.sent[-1][1])
+    check('每次只回 1 条', ok_each_one)
+    check('回复内容在话术集合内', picked <= {'话术A', '话术B', '话术C'}, str(picked))
+    check('多次触发有随机性（≥2种）', len(picked) >= 2, str(picked))
+
+    print('5c) reply_mode=all 全部连发:')
+    n = len(fake.sent)
+    bot._on_message(NormalizedMsg('测试群', 'group', '<己方客服H>', 'friend', 'text', '请求连发'))
+    check('2 条全部发出', len(fake.sent) - n == 2, f'实际 {len(fake.sent)-n}')
 
     print('6) 新人欢迎语（默认关闭 -> 开启）:')
     n = len(fake.sent)

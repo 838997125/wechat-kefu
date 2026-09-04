@@ -9,6 +9,7 @@ from collections import deque
 from datetime import datetime
 
 from . import rules as rule_engine
+from . import router as route_engine
 from .ai import AIClient
 from .driver import WxDriver, parse_welcome_names
 
@@ -57,6 +58,10 @@ class Bot:
             try:
                 self._drain_commands()
                 self.cfg.load()  # 热加载
+                if not self.driver.ready:
+                    # 微信连接丢失：自动拉起重连
+                    self.driver.heal_if_needed()
+                    time.sleep(2)
                 if not self.paused and self.driver.ready:
                     for m in self.driver.poll(self.cfg.chats()):
                         self._on_message(m)
@@ -129,15 +134,19 @@ class Bot:
 
         if m.attr == 'self' and not self.cfg.general().get('record_self', True):
             return
-        if not self.storage.record(m.as_dict()):
-            return
+        # is_new = 是否首次入库（真正的新消息）；is_history 是基线/旧消息
+        is_new = self.storage.record(m.as_dict())
 
-        if m.is_history:
+        if m.is_history or not is_new:
             log.info('基线消息 [%s] %s(%s): %s', m.chat, m.sender or '-', m.mtype,
                      m.content[:80].replace('\n', ' '))
             return
         log.info('消息 [%s] %s(%s): %s', m.chat, m.sender or '-', m.mtype,
                  m.content[:80].replace('\n', ' '))
+
+        # 路由转发：对所有真实新消息生效（system 除外），独立于本群关键词回复
+        if m.attr == 'friend':
+            self._route_message(m)
 
         # 新人入群欢迎
         if m.attr == 'system':
@@ -152,15 +161,17 @@ class Bot:
         clean = rule_engine.strip_bot_mentions(m.content, bot_names)
 
         if m.mtype not in ('text', 'quote'):
-            log.info('非文本消息（%s），仅记录', m.mtype)
+            log.info('非文本消息（%s），仅记录+路由', m.mtype)
             return
         if not clean:
             return
 
         # 1) 关键词规则
+
+        # 1) 关键词规则
         rule = rule_engine.match_rule(self.cfg.rules(), m.chat, m.chat_type, clean, mentioned)
         if rule:
-            replies = rule_engine.render_replies(rule, m.sender)
+            replies = rule_engine.choose_replies(rule, m.sender)
             at_list = rule_engine.resolve_at(rule.get('at'), m.sender, m.chat_type)
             for i, text in enumerate(replies):
                 self._reply(m, text, src=f"rule:{rule.get('name', '?')}",
@@ -178,6 +189,93 @@ class Bot:
         if m.chat_type == 'group' and trigger == 'at' and not mentioned:
             return
         self._ai_reply(m, clean, ai_cfg)
+
+    def _route_message(self, m):
+        """多群消息路由：匹配路由规则 → 影子模式只记录 / 正式模式转发到目标群。"""
+        rcfg = self.cfg.data.get('routing', {}) or {}
+        routes = rcfg.get('routes', []) or []
+        if not routes:
+            return
+        shadow = bool(rcfg.get('shadow_mode', True))
+        tracking = route_engine.extract_tracking_no(m.content)
+        all_numbers = route_engine.extract_all_tracking(m.content)
+        own_staff = rcfg.get('own_staff', ['<公司简称>'])
+        # 己方客服发的消息默认不参与路由（避免把自己搬运的消息再转一遍），
+        # 除非该路由显式 require 己方发送者（如 B群只处理<回写机器人名>，不在这里判断）
+        if route_engine.is_own_staff(m.sender, own_staff):
+            # <回写机器人名>等外部机器人不属己方；己方客服在 B 群的搬运、A群的发言都不触发转发
+            if not m.sender or '<回写机器人名>' not in m.sender:
+                return
+        route = route_engine.match_route(routes, m.chat, m.sender, m.content, m.mtype)
+        if not route:
+            return
+        # 去重 key：按单号去重的路由（催发货）用单号集合，否则用原文
+        dedup_key = route_engine.route_dedup_key(route, m.content, all_numbers=all_numbers)
+        rid = route.get('id', route.get('name', ''))
+        # 防重复：同一去重key 正式发送过不再处理；同一模式下不重复记录
+        if not shadow and self.storage.route_forwarded(rid, dedup_key):
+            return
+        if self.storage.route_log_exists(rid, dedup_key, shadow):
+            return
+        # 若需要@发单人：按单号在目标群（通常是A群）回溯发该单号的客服昵称
+        requester = ''
+        if route.get('at_requester') and tracking:
+            requester = self.storage.find_sender_by_tracking(
+                route.get('target'), tracking, own_staff=rcfg.get('own_staff'))
+        forward_text = route_engine.build_forward(
+            route, m.content, m.sender, tracking, requester=requester, all_numbers=all_numbers)
+        if forward_text is None:
+            # 该路由暂不满足转发条件（如催发货但消息里没有快递单号），跳过不记日志
+            return
+        target = route.get('target')
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if shadow:
+            self.storage.route_log({
+                'ts': ts, 'route_name': rid, 'source_chat': m.chat,
+                'target_chat': target, 'sender': m.sender, 'tracking_no': tracking,
+                'mode': route.get('mode'), 'shadow': True,
+                'original': dedup_key, 'forward': forward_text, 'status': 'shadow'})
+            log.info('【影子】[%s] %s -> %s（单号:%s @%s）转发预览: %s',
+                     m.chat, route.get('name'), target, tracking or '无', requester or '未匹配',
+                     forward_text[:60].replace('\n', ' '))
+            return
+        # 正式转发（带频控/延时；@发单人 由发送通道处理）
+        ok = self._do_send_route(target, forward_text, at_requester=requester if route.get('at_requester') else None)
+        status = 'sent' if ok else 'failed'
+        self.storage.route_log({
+            'ts': ts, 'route_name': rid, 'source_chat': m.chat,
+            'target_chat': target, 'sender': m.sender, 'tracking_no': tracking,
+            'mode': route.get('mode'), 'shadow': False,
+            'original': dedup_key, 'forward': forward_text, 'status': status})
+        log.info('【转发】%s -> %s：%s（%s）', m.chat, target, forward_text[:60].replace('\n', ' '), status)
+
+    def _do_send_route(self, chat, text, at_requester=None):
+        """路由转发：延时+频控后发文本到目标群。at_requester: 需@的发单人昵称。"""
+        g = self.cfg.general()
+        now = time.time()
+        dmin = float(g.get('reply_delay_min', 3))
+        dmax = float(g.get('reply_delay_max', 8))
+        if dmax > 0:
+            time.sleep(random.uniform(min(dmin, dmax), max(dmin, dmax)))
+        dq = self._reply_times.setdefault(chat, deque())
+        while dq and time.time() - dq[0] > 60:
+            dq.popleft()
+        limit = int(g.get('max_replies_per_minute', 8))
+        if len(dq) >= limit:
+            log.warning('[路由] %s 超过每分钟 %d 条上限，跳过', chat, limit)
+            return False
+        chunks = rule_engine.split_text(text, int(g.get('split_length', 1500)))
+        at_list = [at_requester] if at_requester else None
+        ok_all = True
+        for i, chunk in enumerate(chunks):
+            # 只在第一段 @（wxauto at 参数会在文本前插入 @）
+            ok = self.driver.send(chat, chunk, at=(at_list if i == 0 else None))
+            ok_all = ok_all and ok
+            if i < len(chunks) - 1:
+                time.sleep(random.uniform(0.8, 1.6))
+        if ok_all:
+            dq.append(time.time())
+        return ok_all
 
     def _handle_welcome(self, m):
         if m.chat_type != 'group':

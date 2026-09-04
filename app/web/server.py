@@ -120,6 +120,12 @@ class PanelServer:
         def logs():
             return jsonify({'ok': True, 'logs': list(self._log_buf)[-int(request.args.get('lines', 200)):]})
 
+        @app.get('/api/routes/logs')
+        def route_logs():
+            shadow = request.args.get('shadow')
+            shadow = None if shadow in (None, '', 'all') else (shadow == '1')
+            return jsonify({'ok': True, 'logs': self.storage.route_recent(limit=300, shadow=shadow)})
+
     def run(self, host='127.0.0.1'):
         # 关闭 Flask 默认启动日志噪音
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
