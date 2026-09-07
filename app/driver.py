@@ -264,12 +264,21 @@ class WxDriver:
             first_pass = name not in self._baseline
             if not first_pass and not unread.get(name, False):
                 continue
-            try:
-                self.wx.ChatWith(name)
-                time.sleep(self._switch_wait)
-                raw_msgs = self.wx.GetAllMessage()
-            except Exception as e:
-                log.warning('读取 %s 失败: %s', name, e)
+            raw_msgs = None
+            for attempt in range(2):  # 最多切换两次，防止前台窗口没切到目标群导致串读
+                try:
+                    self.wx.ChatWith(name)
+                    time.sleep(self._switch_wait)
+                    # 校验当前激活会话确实是目标群，避免把私聊/别的群消息读串
+                    if self._current_chat_matches(name):
+                        raw_msgs = self.wx.GetAllMessage()
+                        break
+                    log.warning('切换到 %s 后当前会话不匹配，重试（第%d次）', name, attempt + 1)
+                    time.sleep(self._switch_wait)
+                except Exception as e:
+                    log.warning('读取 %s 失败: %s', name, e)
+                    break
+            if raw_msgs is None:
                 continue
             self._baseline.add(name)
             for m in raw_msgs:
@@ -277,6 +286,17 @@ class WxDriver:
                 if norm:
                     out.append(norm)
         return out
+
+    def _current_chat_matches(self, name):
+        """校验微信当前激活的聊天窗口是否就是 name（防止窗口焦点没切过去导致读串群）。"""
+        try:
+            info = self.wx.ChatInfo()
+            if isinstance(info, dict) and info.get('chat_name'):
+                return str(info['chat_name']).strip() == name
+        except Exception:
+            pass
+        # ChatInfo 不可用时保守放行
+        return True
 
     def _normalize(self, name, ctype, m, is_history=False):
         attr = getattr(m, 'attr', '') or ''
