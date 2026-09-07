@@ -102,9 +102,38 @@ def match_route(routes, source_chat, sender, content, mtype):
             continue
         if not _sender_match(sender, rt.get('require_sender_contains'), rt.get('exclude_sender_contains')):
             continue
+        if not _text_match(content, rt.get('keywords'), rt.get('regex')):
+            continue
+        # 排除关键词：命中任一则该路由不生效
+        if any(k and k in (content or '') for k in (rt.get('exclude_keywords') or [])):
+            continue
         if _text_match(content, rt.get('keywords'), rt.get('regex')):
             return rt
     return None
+
+
+def match_routes(routes, source_chat, sender, content, mtype, own_staff=None):
+    """返回所有命中的路由列表（一条消息可同时转发到多个目标群）。"""
+    if mtype not in ('text', 'quote'):
+        return []
+    # 己方客服发的消息不触发任何转发（<回写机器人名>等外部机器人除外）
+    if own_staff is not None and is_own_staff(sender, own_staff) and '<回写机器人名>' not in (sender or ''):
+        return []
+    out = []
+    for rt in routes:
+        if not rt.get('enabled', True):
+            continue
+        if rt.get('source') != source_chat:
+            continue
+        if not _sender_match(sender, rt.get('require_sender_contains'), rt.get('exclude_sender_contains')):
+            continue
+        if not _text_match(content, rt.get('keywords'), rt.get('regex')):
+            continue
+        # 排除关键词：命中任一则该路由不生效
+        if any(k and k in (content or '') for k in (rt.get('exclude_keywords') or [])):
+            continue
+        out.append(rt)
+    return out
 
 
 def _result_summary(text):
@@ -112,11 +141,13 @@ def _result_summary(text):
     t = text or ''
     if any(k in t for k in ['进村件', '投递至村站', '完成转运派送', '二段物流', '转运仓']):
         return '快件已投进村站/转运，无法拦截退回'
+    if '拦截失败' in t or '未到达指定退改地址' in t or '未到达指定退' in t:
+        return '拦截失败，快件未到达退改地址'
     if any(k in t for k in ['已录签收', '已签收', '代收点', '驿站', '已取件', '已被取走', '已完成签收']):
         return '快件已签收/在代收点，无法拦截退回'
     if '无法受理' in t:
         return '网点已无法受理拦截'
-    return '快件已签收/在代收点，无法拦截退回'
+    return '拦截失败，请发单客服知悉处理'
 
 
 def build_forward(route, msg_content, sender, tracking_no, requester=None, all_numbers=None):

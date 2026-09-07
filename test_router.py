@@ -33,8 +33,9 @@ rt2 = R.match_route(routes, '<品牌A>客服对接群', '<己方客服B>', '7903
 check('己方客服(<公司简称>)搬运的消息被排除', rt2 is None, str(rt2 and rt2['id']))
 rt3 = R.match_route(routes, '<品牌A>客服对接群', '<合作方客服A>', '7913 催单', 'text')
 check('催单命中A→C路由', rt3 is not None and rt3['id'] == 'rt_a2c', str(rt3 and rt3['id']))
-rt4 = R.match_route(routes, '<品牌A>客服对接群', '<合作方客服A>', '客户说少件了', 'text')
-check('少件命中A→D(审单发货)路由', rt4 is not None and rt4['id'] == 'rt_a2d_shortage', str(rt4 and rt4['id']))
+rt4_list = R.match_routes(routes, '<品牌A>客服对接群', '<合作方客服A>', '客户说少件了', 'text', own_staff=['<公司简称>','<己方客服D>'])
+rt4_ids = [r['id'] for r in rt4_list]
+check('少件同时命中A→B(中通核实)和A→D(仓库查视频)', 'rt_a2b' in rt4_ids and 'rt_a2d_shortage' in rt4_ids, str(rt4_ids))
 
 print('3) B群结果回流（仅“无法拦截”才回传，正常拦截成功不回传）:')
 # 拦截成功（已通知网点）-> 不回传

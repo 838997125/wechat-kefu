@@ -10,6 +10,7 @@ from datetime import datetime
 
 from . import rules as rule_engine
 from . import router as route_engine
+from . import intention
 from .ai import AIClient
 from .driver import WxDriver, parse_welcome_names
 
@@ -22,6 +23,7 @@ class Bot:
         self.storage = storage
         self.driver = WxDriver(cfg.general())
         self.ai = AIClient()
+        self.intent_store = intention.IntentStore(storage)
         self._seen = {}
         self._last_reply = {}
         self._reply_times = {}
@@ -58,17 +60,21 @@ class Bot:
             try:
                 self._drain_commands()
                 self.cfg.load()  # 热加载
-                if not self.driver.ready:
-                    # 微信连接丢失：自动拉起重连
-                    self.driver.heal_if_needed()
-                    time.sleep(2)
+                # 心跳探测：微信重启后旧 wxauto 句柄可能失效，主动检测并自愈重连
+                self.driver.heartbeat()
                 if not self.paused and self.driver.ready:
                     for m in self.driver.poll(self.cfg.chats()):
                         self._on_message(m)
                 else:
-                    time.sleep(0.5)
+                    time.sleep(2)
             except Exception as e:
                 log.error('轮询异常: %s', e)
+                # 异常时也尝试自愈
+                try:
+                    self.driver.ready = False
+                    self.driver.heal_if_needed(force=True)
+                except Exception:
+                    pass
                 time.sleep(2)
             time.sleep(float(self.cfg.general().get('poll_interval_sec', 1.5)))
         self.status_msg = '已停止'
@@ -119,6 +125,8 @@ class Bot:
             'chats': [c['name'] for c in self.cfg.chats()],
             'rules_enabled': len(self.cfg.rules()),
             'ai_enabled': bool(self.cfg.ai().get('enabled')),
+            'llm_intent': bool((self.cfg.data.get('routing', {}) or {}).get('llm_intent', {}).get('enabled')),
+            'intent_stats': self.intent_store.stats(),
         }
         s.update(self.storage.stats_today())
         return s
@@ -191,7 +199,8 @@ class Bot:
         self._ai_reply(m, clean, ai_cfg)
 
     def _route_message(self, m):
-        """多群消息路由：匹配路由规则 → 影子模式只记录 / 正式模式转发到目标群。"""
+        """多群消息路由（大模型意图识别 + 关键词降级）。
+        LLM 判定目标群字母 [B/C/D/A]，映射到具体群；模型失败/关闭时降级关键词路由。"""
         rcfg = self.cfg.data.get('routing', {}) or {}
         routes = rcfg.get('routes', []) or []
         if not routes:
@@ -200,15 +209,77 @@ class Bot:
         tracking = route_engine.extract_tracking_no(m.content)
         all_numbers = route_engine.extract_all_tracking(m.content)
         own_staff = rcfg.get('own_staff', ['<公司简称>'])
-        # 己方客服发的消息默认不参与路由（避免把自己搬运的消息再转一遍），
-        # 除非该路由显式 require 己方发送者（如 B群只处理<回写机器人名>，不在这里判断）
-        if route_engine.is_own_staff(m.sender, own_staff):
-            # <回写机器人名>等外部机器人不属己方；己方客服在 B 群的搬运、A群的发言都不触发转发
-            if not m.sender or '<回写机器人名>' not in m.sender:
-                return
-        route = route_engine.match_route(routes, m.chat, m.sender, m.content, m.mtype)
-        if not route:
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        targets = None  # 目标群字母列表
+        llm_src = None
+        llm_cfg = rcfg.get('llm_intent', {}) or {}
+        if llm_cfg.get('enabled'):
+            is_robot = '<回写机器人名>' in (m.sender or '')
+            res, llm_src = intention.classify(
+                m.sender, m.content, own_staff, llm_cfg, self.intent_store, is_robot=is_robot)
+            if res is not None:
+                targets = [t for t in res if t in ('B', 'C', 'D', 'A')]
+
+        # 降级或 LLM 关闭：用关键词路由推断目标群
+        if targets is None:
+            targets = self._keyword_targets(routes, m, own_staff)
+            llm_src = llm_src or 'keyword'
+
+        if not targets:
             return
+
+        # 目标群字母 -> 实际路由配置（必须校验路由的源群与消息所在群一致，避免跨群误映射）
+        by_target = {}
+        for rt in routes:
+            tgt = rt.get('target', '')
+            src = rt.get('source', '')
+            # 源群必须匹配消息所在群，否则该路由对本条消息不适用
+            if src != m.chat:
+                continue
+            if '药商通c端中通快递沟通群' in tgt:
+                by_target.setdefault('B', rt)
+            elif '<物流方>&<公司简称>' in tgt:
+                by_target.setdefault('C', rt)
+            elif 'C端审单发货售后' in tgt:
+                by_target.setdefault('D', rt)
+            elif src == '药商通c端中通快递沟通群':
+                by_target.setdefault('A', rt)
+
+        # B群<回写机器人名>失败结果只允许回A；B群其他消息一律不路由
+        if m.chat == '药商通c端中通快递沟通群':
+            is_robot = '<回写机器人名>' in (m.sender or '')
+            if not is_robot:
+                return
+            targets = [t for t in targets if t == 'A']
+        # A群发出的消息只能转 B/C/D（不能回A自己）
+        if m.chat == '<品牌A>客服对接群':
+            targets = [t for t in targets if t in ('B', 'C', 'D')]
+
+        for letter in targets:
+            rt = by_target.get(letter)
+            if rt:
+                self._process_one_route(rt, m, shadow, tracking, all_numbers, rcfg, own_staff, ts,
+                                        llm_src=llm_src)
+
+    def _keyword_targets(self, routes, m, own_staff):
+        """降级：关键词路由 -> 目标群字母列表。"""
+        matched = route_engine.match_routes(routes, m.chat, m.sender, m.content, m.mtype, own_staff=own_staff)
+        letters = []
+        for rt in matched:
+            tgt = rt.get('target', '')
+            if '药商通c端中通快递沟通群' in tgt:
+                letters.append('B')
+            elif '<物流方>&<公司简称>' in tgt:
+                letters.append('C')
+            elif 'C端审单发货售后' in tgt:
+                letters.append('D')
+            elif rt.get('source') == '药商通c端中通快递沟通群':
+                letters.append('A')
+        return letters
+
+    def _process_one_route(self, route, m, shadow, tracking, all_numbers, rcfg, own_staff, ts, llm_src=''):
+        """处理单条命中路由：去重、生成内容、影子记录或正式转发。"""
         # 去重 key：按单号去重的路由（催发货）用单号集合，否则用原文
         dedup_key = route_engine.route_dedup_key(route, m.content, all_numbers=all_numbers)
         rid = route.get('id', route.get('name', ''))
@@ -228,16 +299,15 @@ class Bot:
             # 该路由暂不满足转发条件（如催发货但消息里没有快递单号），跳过不记日志
             return
         target = route.get('target')
-        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         if shadow:
             self.storage.route_log({
                 'ts': ts, 'route_name': rid, 'source_chat': m.chat,
                 'target_chat': target, 'sender': m.sender, 'tracking_no': tracking,
                 'mode': route.get('mode'), 'shadow': True,
                 'original': dedup_key, 'forward': forward_text, 'status': 'shadow'})
-            log.info('【影子】[%s] %s -> %s（单号:%s @%s）转发预览: %s',
-                     m.chat, route.get('name'), target, tracking or '无', requester or '未匹配',
-                     forward_text[:60].replace('\n', ' '))
+            log.info('【影子·%s】[%s] %s -> %s（单号:%s @%s）转发预览: %s',
+                     llm_src or '?', m.chat, route.get('name'), target, tracking or '无',
+                     requester or '未匹配', forward_text[:60].replace('\n', ' '))
             return
         # 正式转发（带频控/延时；@发单人 由发送通道处理）
         ok = self._do_send_route(target, forward_text, at_requester=requester if route.get('at_requester') else None)

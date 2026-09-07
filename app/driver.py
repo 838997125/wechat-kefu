@@ -174,6 +174,33 @@ class WxDriver:
         except Exception:
             return True  # 免费版可能无此方法，保守视为在线
 
+    def heartbeat(self):
+        """主动探测 wxauto 连接是否真正可用（微信重启后旧句柄可能失效）。
+        探测失败则置 ready=False 并自动重连。返回 True 表示当前可用。"""
+        if self.wx is None:
+            self.ready = False
+            return self.heal_if_needed(force=True)
+        try:
+            # 轻量探测：读取会话列表；微信重启/句柄失效时这里会抛异常
+            _ = self.wx.GetSession()
+            # 连续成功则重置失败计数
+            self._fail_streak = 0
+            self.ready = True
+            return True
+        except Exception as e:
+            self._fail_streak += 1
+            log.warning('微信心跳探测失败（连续%d次）: %s', self._fail_streak, str(e)[:60])
+            self.ready = False
+            # 心跳确认失效，强制拉起微信并多重试连接（微信重启后可能需要几秒）
+            ensure_wechat_window()
+            try:
+                self.start(retries=6)
+                return self.ready
+            except Exception as ce:
+                log.warning('心跳自愈重连暂未成功: %s', str(ce)[:80])
+                return False
+
+
     # ---- 读取 ----
 
     def scan_sessions(self):
@@ -213,9 +240,9 @@ class WxDriver:
                 self.ready = False
         return result
 
-    def heal_if_needed(self):
+    def heal_if_needed(self, force=False):
         """运行中检测到微信连接丢失时自动拉起并重连。返回 True 表示已恢复。"""
-        if self.ready and self._fail_streak < 3:
+        if not force and self.ready and self._fail_streak < 3:
             return False
         log.warning('检测到微信连接丢失，尝试自动拉起并重新连接…')
         ensure_wechat_window()

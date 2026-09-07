@@ -39,33 +39,29 @@ matched_keys = []
 for ts, chat, sender, attr, mtype, content in rows:
     if mtype not in ('text', 'quote'):
         continue
-    # 己方客服消息不触发转发（<回写机器人名>除外）
-    if R.is_own_staff(sender, own) and '<回写机器人名>' not in (sender or ''):
-        continue
-    rt = R.match_route(routes, chat, sender, content or '', mtype)
-    if not rt:
-        continue
     tracking = R.extract_tracking_no(content or '')
     all_numbers = R.extract_all_tracking(content or '')
-    dedup_key = R.route_dedup_key(rt, content, all_numbers=all_numbers)
-    # 按 dedup_key 去重（同一批单号只记一次）
-    if any(prev['key'] == dedup_key and prev['rid'] == rt.get('id') for prev in matched_keys):
-        continue
-    requester = ''
-    if rt.get('at_requester') and tracking:
-        requester = st.find_sender_by_tracking(rt.get('target'), tracking, own_staff=own)
-    forward = R.build_forward(rt, content, sender, tracking, requester=requester, all_numbers=all_numbers)
-    if forward is None:
-        continue
-    rid = rt.get('id', rt.get('name', ''))
-    st.route_log({
-        'ts': ts, 'route_name': rid, 'source_chat': chat,
-        'target_chat': rt.get('target'), 'sender': sender, 'tracking_no': tracking,
-        'mode': rt.get('mode'), 'shadow': shadow,
-        'original': dedup_key, 'forward': forward, 'status': 'shadow'})
-    generated += 1
-    matched_keys.append({'rid': rid, 'key': dedup_key})
-    matched.append((ts, rt.get('name'), chat, rt.get('target'), sender, tracking, forward[:50]))
+    # 一条消息可能命中多条路由（少件同时转B群和D群）
+    for rt in R.match_routes(routes, chat, sender, content or '', mtype, own_staff=own):
+        dedup_key = R.route_dedup_key(rt, content, all_numbers=all_numbers)
+        rid = rt.get('id', rt.get('name', ''))
+        # 按 dedup_key+路由 去重
+        if any(prev['key'] == dedup_key and prev['rid'] == rid for prev in matched_keys):
+            continue
+        requester = ''
+        if rt.get('at_requester') and tracking:
+            requester = st.find_sender_by_tracking(rt.get('target'), tracking, own_staff=own)
+        forward = R.build_forward(rt, content, sender, tracking, requester=requester, all_numbers=all_numbers)
+        if forward is None:
+            continue
+        st.route_log({
+            'ts': ts, 'route_name': rid, 'source_chat': chat,
+            'target_chat': rt.get('target'), 'sender': sender, 'tracking_no': tracking,
+            'mode': rt.get('mode'), 'shadow': shadow,
+            'original': dedup_key, 'forward': forward, 'status': 'shadow'})
+        generated += 1
+        matched_keys.append({'rid': rid, 'key': dedup_key})
+        matched.append((ts, rt.get('name'), chat, rt.get('target'), sender, tracking, forward[:50]))
 
 print(f'\n回放完成：共扫描 {len(rows)} 条消息，命中路由 {generated} 条\n')
 for ts, name, src, tgt, sender, no, fwd in matched:

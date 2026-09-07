@@ -17,7 +17,8 @@ DEFAULT_CONFIG = {
         "split_length": 1500,            # 长消息按此长度拆条
         "record_self": True,             # 是否记录机器人自己发的消息
         "at_sender": True,               # AI 回复群消息时自动 @ 提问人
-        "auto_open_panel": True          # 启动时自动打开管理面板
+        "auto_open_panel": True,         # 启动时自动打开管理面板
+        "panel_password": "kefu2026"     # Web 管理面板登录密码（客服远程访问时使用，请部署后修改）
     },
     "chats": [
         {"name": "客服测试群", "type": "group", "enabled": True}
@@ -72,12 +73,14 @@ DEFAULT_CONFIG = {
         "routes": [
             {
                 "id": "rt_a2b",
-                "name": "客服对接群 → 中通快递群（拦截/召回/签收未收到/催件）",
+                "name": "客服对接群 → 中通快递群（拦截/召回/签收未收到/催件/送错地址/短少）",
                 "enabled": True,
                 "source": "<品牌A>客服对接群",
                 "target": "药商通c端中通快递沟通群",
                 "mode": "raw",           # raw=纯原文转发 / process=加工话术后转发
-                "keywords": ["拦截", "召回", "签收未收到", "签收未收", "没收到", "催件", "催快递"],
+                # 以群里实际转发为准：拦截/召回/签收未收到/催件/送错地址/短少 客服都会转到中通群
+                "keywords": ["拦截", "召回", "签收未收到", "签收未收", "没收到", "催件", "催快递",
+                             "送错地址", "没送到正确地址", "没送到", "短少", "少件"],
                 "regex": "",
                 "require_sender_contains": [],   # 空=不限定发送者；填关键词则只处理昵称含该词的消息
                 "exclude_sender_contains": ["<公司简称>"],  # 排除己方客服（他们已手工搬运）
@@ -90,8 +93,9 @@ DEFAULT_CONFIG = {
                 "source": "<品牌A>客服对接群",
                 "target": "<物流方>&<公司简称>",
                 "mode": "process",
-                "keywords": ["催单", "提前揽收", "揽收", "催发货", "催派"],
+                "keywords": ["催单", "提前揽收", "催揽收", "麻烦揽收", "安排揽收", "揽收一下", "催发货", "催派"],
                 "regex": "",
+                "exclude_keywords": ["揽收重量", "已揽收"],   # 排除含重量数据/已揽收的非催办消息
                 "require_sender_contains": [],
                 "exclude_sender_contains": ["<公司简称>"],
                 # 只发提取出的快递单号（JDVB/中通单号），按单号去重，不转发平台订单号
@@ -112,7 +116,8 @@ DEFAULT_CONFIG = {
                 # 注意“已受理/已入柜入库/若收件人已收到将无法退回”是条件句（拦截进行中），不算失败。
                 # 注意：不要用“无法退回”这种词——拦截受理成功的条件句里也有“若收件人已收到，将无法退回”。
                 "keywords": ["已录签收", "已被签收", "已完成签收", "快件已签收", "已在代收点", "已在驿站",
-                            "已被取件", "已取件", "无法拦截", "无法受理", "进村件", "投递至村站", "已完成转运派送"],
+                            "已被取件", "已取件", "拦截失败", "未到达指定退改地址", "无法受理",
+                            "进村件", "投递至村站", "已完成转运派送"],
                 "regex": "",
                 "require_sender_contains": ["<回写机器人名>"],   # 只处理中通<回写机器人名>的结果消息
                 "exclude_sender_contains": [],
@@ -134,18 +139,30 @@ DEFAULT_CONFIG = {
             },
             {
                 "id": "rt_a2d_shortage",
-                "name": "客服对接群 → C端审单发货售后（收到货少件核实）",
+                "name": "客服对接群 → C端审单发货售后（少件/少发核实、提供发货视频截图）",
                 "enabled": True,
                 "source": "<品牌A>客服对接群",
                 "target": "C端审单发货售后",
                 "mode": "raw",
-                "keywords": ["少件", "少发", "漏发", "缺货", "少货", "数量不对", "没收到货", "包裹里没有"],
+                # 实际流转：售后在A群要核实结果/发货视频/反馈少发 -> 客服转D群让仓库核实打包视频 -> 仓库回视频截图
+                "keywords": ["少件", "少发", "漏发", "缺货", "少货", "数量不对", "没收到货", "包裹里没有",
+                             "提供核实结果", "提供核实", "核实结果", "提供发货视频", "发货视频", "提供视频",
+                             "打包视频", "称重图", "称重", "反馈少", "少一盒", "少一瓶"],
                 "regex": "",
                 "require_sender_contains": [],
                 "exclude_sender_contains": ["<公司简称>"],
                 "template": ""
             }
-        ]
+        ],
+        # 大模型意图识别（混合方案）：未在学习库命中的新消息才调用模型，结果自动学习记忆
+        # api_key 不在代码里写死：请在本地 config.json 的 routing.llm_intent.api_key 配置，
+        # 或设置环境变量 KEFU_ARK_API_KEY（避免密钥提交到代码仓库）
+        "llm_intent": {
+            "enabled": True,
+            "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+            "api_key": os.environ.get("KEFU_ARK_API_KEY", ""),
+            "model": "ark-code-latest"
+        }
     },
     "ai": {
         "enabled": False,

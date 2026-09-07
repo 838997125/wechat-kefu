@@ -246,11 +246,65 @@
 </div>
 <div class="toast" id="toast"></div>
 
+<!-- 登录遮罩 -->
+<div id="login-mask" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:12px;padding:28px 32px;width:320px;box-shadow:0 8px 40px rgba(0,0,0,.2);">
+    <h2 style="margin:0 0 6px;font-size:19px">客服微信助手</h2>
+    <div class="hint" style="margin-bottom:16px">请输入面板访问密码</div>
+    <input type="password" id="login-pwd" placeholder="访问密码" style="width:100%;padding:10px 12px;border:1px solid #d0d3d6;border-radius:6px;font-size:14px;box-sizing:border-box;margin-bottom:12px">
+    <button class="btn primary" id="login-btn" style="width:100%;justify-content:center">登 录</button>
+    <div id="login-err" style="color:#f53f3f;font-size:13px;margin-top:8px;display:none">密码错误</div>
+  </div>
+</div>
+
 <script>
 let cfg = null;
 const $ = id => document.getElementById(id);
 function toast(t){ const e=$('toast'); e.textContent=t; e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2200); }
 function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// ---- 登录认证 ----
+function getToken(){ return localStorage.getItem('kefu_panel_token') || ''; }
+function setToken(t){ localStorage.setItem('kefu_panel_token', t); }
+function clearToken(){ localStorage.removeItem('kefu_panel_token'); }
+function showLogin(){ const m=$('login-mask'); m.style.display='flex'; $('login-pwd').value=''; $('login-pwd').focus(); }
+function hideLogin(){ $('login-mask').style.display='none'; $('login-err').style.display='none'; }
+async function doLogin(){
+  const pwd = $('login-pwd').value.trim();
+  try{
+    const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})});
+    const j = await r.json();
+    if(j.ok){ setToken(j.token); hideLogin(); await loadConfig(); refreshStatus(); }
+    else { $('login-err').style.display='block'; }
+  }catch(e){ $('login-err').textContent='登录失败'; $('login-err').style.display='block'; }
+}
+$('login-btn').onclick = doLogin;
+$('login-pwd').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+
+// 统一封装 fetch：自动带 token，401 弹登录
+const _fetch = window.fetch.bind(window);
+window.fetch = async function(url, opts){
+  opts = opts || {};
+  const isApi = (typeof url === 'string') && url.startsWith('/api/') && url !== '/api/login';
+  if(isApi){
+    opts.headers = Object.assign({}, opts.headers||{}, {'X-Panel-Token': getToken()});
+  }
+  const resp = await _fetch(url, opts);
+  if(isApi && resp.status === 401){
+    const j = await resp.clone().json().catch(()=>({}));
+    if(j.auth_required){ clearToken(); showLogin(); }
+  }
+  return resp;
+};
+// 启动时检查是否已登录（本机访问免登）
+async function checkAuth(){
+  try{
+    const r = await _fetch('/api/authcheck');
+    const j = await r.json();
+    if(j.ok && j.authed){ hideLogin(); return true; }
+    showLogin(); return false;
+  }catch(e){ hideLogin(); return true; }
+}
 
 // ---- 导航 ----
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
@@ -569,8 +623,11 @@ function renderMsgTabs(){
 $('btn-refresh-msgs').onclick = loadMessages;
 
 // ---- 启动 ----
-loadConfig();
-refreshStatus(); setInterval(refreshStatus, 5000);
+(async function init(){
+  const ok = await checkAuth();
+  if(ok){ await loadConfig(); refreshStatus(); }
+  setInterval(refreshStatus, 5000);
+})();
 setInterval(refreshLogs, 6000);
 </script>
 </body>
