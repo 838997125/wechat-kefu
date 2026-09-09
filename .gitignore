@@ -20,3 +20,6 @@ dist/
 # 临时文件
 *.tmp
 *.log
+tools/
+_analyze.py
+_*.py
