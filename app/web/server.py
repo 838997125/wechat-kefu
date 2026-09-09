@@ -44,10 +44,19 @@ class PanelServer:
         """面板登录密码（可在 config 的 general.panel_password 配置），默认 kefu2026。"""
         return str(self.cfg.general().get('panel_password', '') or 'kefu2026')
 
+    def _is_local_request(self, req):
+        """判断是否为本机直连访问（免登）。
+        经 Cloudflare 隧道/反代的公网请求会带 CF-Connecting-IP / X-Forwarded-For 头，
+        这类请求即使 remote_addr 是 127.0.0.1（隧道本地回环转发）也不算本机，必须登录。"""
+        # 公网/反代标识头存在 -> 非本机直连
+        if req.headers.get('CF-Connecting-IP') or req.headers.get('X-Forwarded-For'):
+            return False
+        return req.remote_addr in ('127.0.0.1', '::1', 'localhost')
+
     def _authed(self, req):
-        """校验请求是否已登录：Header token 或 query token，或本机回环（本机免登）。"""
-        # 本机访问免登录（方便开机自动打开）
-        if req.remote_addr in ('127.0.0.1', '::1', 'localhost'):
+        """校验请求是否已登录：Header token 或 query token，或本机直连（本机免登）。"""
+        # 本机直连免登录（方便开机自动打开）；经隧道的公网请求不免登
+        if self._is_local_request(req):
             return True
         token = req.headers.get('X-Panel-Token') or req.args.get('token') or ''
         exp = _SESSIONS.get(token)
@@ -89,13 +98,13 @@ class PanelServer:
                 for k in [t for t, e in _SESSIONS.items() if e < now]:
                     _SESSIONS.pop(k, None)
                 return jsonify({'ok': True, 'token': token,
-                                'local': request.remote_addr in ('127.0.0.1', '::1', 'localhost')})
+                                'local': self._is_local_request(request)})
             return jsonify({'ok': False, 'error': '密码错误'}), 403
 
         @app.get('/api/authcheck')
         def authcheck():
             return jsonify({'ok': True, 'authed': self._authed(request),
-                            'local': request.remote_addr in ('127.0.0.1', '::1', 'localhost')})
+                            'local': self._is_local_request(request)})
 
         @app.get('/api/status')
         def api_status():

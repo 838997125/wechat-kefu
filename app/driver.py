@@ -134,6 +134,9 @@ class WxDriver:
         self._baseline = set()
         self._switch_wait = float(general_cfg.get('switch_wait_sec', 1.5))
         self._fail_streak = 0   # 连续读取失败计数（用于自愈）
+        # 真实 UI 心跳间隔（秒）：低频切换窗口，避免干扰用户打字；部署专用主机可调小
+        self._hb_ui_interval = float(general_cfg.get('heartbeat_ui_interval_sec', 120))
+        self._last_ui_hb = 0.0
 
     # ---- 生命周期 ----
 
@@ -174,31 +177,55 @@ class WxDriver:
         except Exception:
             return True  # 免费版可能无此方法，保守视为在线
 
-    def heartbeat(self):
-        """主动探测 wxauto 连接是否真正可用（微信重启后旧句柄可能失效）。
-        探测失败则置 ready=False 并自动重连。返回 True 表示当前可用。"""
+    def heartbeat(self, force_ui=False):
+        """探测 wxauto 连接是否可用。
+        - 默认轻量探测（读缓存，不抢焦点、不切换窗口），避免干扰用户在微信打字；
+        - 每隔 heartbeat_ui_interval 秒才做一次真实 UI 探测（ChatWith 文件传输助手）；
+        - force_ui=True 时立即做真实探测（用于 poll 读取异常后判断是否需要重连）。
+        失效（COM 指针失效/监听线程崩溃）时自动重连。"""
         if self.wx is None:
             self.ready = False
-            return self.heal_if_needed(force=True)
-        try:
-            # 轻量探测：读取会话列表；微信重启/句柄失效时这里会抛异常
-            _ = self.wx.GetSession()
-            # 连续成功则重置失败计数
-            self._fail_streak = 0
-            self.ready = True
+            return self._reconnect()
+        now = time.time()
+        do_ui = force_ui or (now - getattr(self, '_last_ui_hb', 0)) >= self._hb_ui_interval
+        if not do_ui:
+            # 轻量探测：不切换窗口、不抢焦点；若 ready 已被 poll 置 False，则触发重连
+            if not self.ready:
+                log.warning('检测到连接失效，触发自愈重连')
+                return self._reconnect()
             return True
+        self._last_ui_hb = now
+        try:
+            # 真实 UI 探测：切换到文件传输助手并读会话信息（走 COM 调用）
+            self.wx.ChatWith('文件传输助手')
+            time.sleep(0.3)
+            info = self.wx.ChatInfo()
+            if isinstance(info, dict) and info.get('chat_name'):
+                self._fail_streak = 0
+                self.ready = True
+                return True
+            raise RuntimeError('ChatInfo 无有效会话')
         except Exception as e:
             self._fail_streak += 1
             log.warning('微信心跳探测失败（连续%d次）: %s', self._fail_streak, str(e)[:60])
             self.ready = False
-            # 心跳确认失效，强制拉起微信并多重试连接（微信重启后可能需要几秒）
-            ensure_wechat_window()
+            return self._reconnect()
+
+    def _reconnect(self):
+        """拉起微信并重新初始化 wxauto 连接（多次重试，等微信重新登录/窗口就绪）。"""
+        ensure_wechat_window()
+        try:
+            # 旧对象已失效，置空后由 start() 重新创建
             try:
-                self.start(retries=6)
-                return self.ready
-            except Exception as ce:
-                log.warning('心跳自愈重连暂未成功: %s', str(ce)[:80])
-                return False
+                self.wx = None
+            except Exception:
+                pass
+            self.start(retries=8)
+            return self.ready
+        except Exception as ce:
+            log.warning('心跳自愈重连暂未成功: %s', str(ce)[:80])
+            return False
+
 
 
     # ---- 读取 ----
@@ -277,9 +304,15 @@ class WxDriver:
                     time.sleep(self._switch_wait)
                 except Exception as e:
                     log.warning('读取 %s 失败: %s', name, e)
+                    self._fail_streak += 1
+                    # 连续多个群读取都报 COM/UI 错误，说明连接已失效（如重新登录后监听线程崩溃）
+                    if self._fail_streak >= 3:
+                        log.warning('多次读取失败，判定微信连接失效，置 ready=False 等待自愈重连')
+                        self.ready = False
                     break
             if raw_msgs is None:
                 continue
+            self._fail_streak = 0  # 成功读到消息，重置失败计数
             self._baseline.add(name)
             for m in raw_msgs:
                 norm = self._normalize(name, ctype, m, is_history=first_pass)

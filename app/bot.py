@@ -252,6 +252,19 @@ class Bot:
             if not is_robot:
                 return
             targets = [t for t in targets if t == 'A']
+            # 单号归属校验：只有该单号确实是本客服群(A群)外部售后发起的，才回流A；
+            # 别的业务线在中通群发的单不回流（客服明确要求）
+            if 'A' in targets:
+                A = '<品牌A>客服对接群'
+                nums = all_numbers or ([tracking] if tracking else [])
+                owned = any(
+                    self.storage.find_sender_by_tracking(A, no, own_staff=own_staff)
+                    for no in nums if no
+                )
+                if not owned:
+                    log.info('【回流拦截】单号未在本客服群发起，不回传A群: %s',
+                             (m.content or '')[:50].replace('\n', ' '))
+                    targets = [t for t in targets if t != 'A']
         # A群发出的消息只能转 B/C/D（不能回A自己）
         if m.chat == '<品牌A>客服对接群':
             targets = [t for t in targets if t in ('B', 'C', 'D')]
