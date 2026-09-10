@@ -160,7 +160,7 @@
           <button class="btn" id="btn-refresh-routes">刷新</button>
         </h2>
         <p class="hint">影子=预演记录；sent=已发送；failed=发送失败。正式转发前请先确认影子日志准确。</p>
-        <table><thead><tr><th style="width:140px">时间</th><th>路由</th><th style="width:110px">源→目标</th><th style="width:110px">发送人/单号</th><th style="width:70px">状态</th><th>转发内容预览</th></tr></thead>
+        <table><thead><tr><th style="width:140px">时间</th><th>路由</th><th style="width:130px">源→目标</th><th style="width:130px">发送人/单号</th><th style="width:70px">状态</th><th>转发内容预览</th></tr></thead>
         <tbody id="routes-tbody"></tbody></table>
       </div>
     </div>
@@ -262,6 +262,20 @@ let cfg = null;
 const $ = id => document.getElementById(id);
 function toast(t){ const e=$('toast'); e.textContent=t; e.classList.add('show'); setTimeout(()=>e.classList.remove('show'), 2200); }
 function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// 群名统一简称（转发日志/规则展示用），鼠标悬停可看全名
+const GROUP_SHORT = [
+  ['<品牌A>客服对接群','<品牌A>客服群'],
+  ['聚好麦【西帕医药旗舰店-物流','聚好麦物流群'],
+  ['药商通c端中通快递沟通群','中通快递群'],
+  ['<物流方>&<公司简称>','中通催发群'],
+  ['C端审单发货售后','仓库售后群'],
+  ['客服测试群','客服测试群']
+];
+function shortGroup(name){
+  const hit = GROUP_SHORT.find(g=>(name||'').indexOf(g[0])>=0);
+  return hit ? hit[1] : (name||'');
+}
+function groupCell(name){ return `<span title="${esc(name)}">${esc(shortGroup(name)||name||'')}</span>`; }
 
 // ---- 登录认证 ----
 function getToken(){ return localStorage.getItem('kefu_panel_token') || ''; }
@@ -468,13 +482,21 @@ function renderRoutes(){
   const r = cfg.routing || (cfg.routing = {shadow_mode:true, routes:[]});
   $('btn-shadow').textContent = r.shadow_mode ? '🔒 影子模式开启中（点击关闭，开始真实转发）' : '✅ 正式转发中（点击切回影子模式）';
   $('btn-shadow').className = 'btn ' + (r.shadow_mode ? '' : 'primary');
+  const groups = r.customer_groups || ['<品牌A>客服对接群'];
+  const srcLabel = '客服源群×' + groups.length + '（' + groups.map(shortGroup).join('、') + '）共用';
   const box = $('route-list');
-  box.innerHTML = (r.routes||[]).filter(x=>x).map(rt => `
+  box.innerHTML = (r.routes||[]).filter(x=>x).map(rt => {
+    // 客服源群发出的规则：源显示为“所有客服源群共用”；回流规则：目标按单号归属
+    const isFromCustomer = groups.includes(rt.source);
+    const isBackflow = (rt.target||'') && groups.includes(rt.target);
+    const srcTxt = isFromCustomer ? srcLabel : shortGroup(rt.source);
+    const tgtTxt = isBackflow ? '对应客服源群（按单号归属回流）' : shortGroup(rt.target);
+    return `
     <div class="rule-item">
       <div class="head"><b>${esc(rt.name||'未命名路由')}</b>
         <label class="switch"><input type="checkbox" data-rt="${esc(rt.id)}" ${rt.enabled!==false?'checked':''}> 启用</label></div>
-      <div class="hint">源：${esc(rt.source)} → 目标：${esc(rt.target)} ｜ 模式：${rt.mode==='raw'?'纯原文':'加工话术'} ｜ 关键词：${esc((rt.keywords||[]).join('、'))}${(rt.require_sender_contains||[]).length?(' ｜ 只处理发送者含：'+esc(rt.require_sender_contains.join(','))):''}${(rt.exclude_sender_contains||[]).length?(' ｜ 排除发送者含：'+esc(rt.exclude_sender_contains.join(','))):''}</div>
-    </div>`).join('') || '<p class="hint">暂无路由规则（在 config.json 的 routing.routes 中配置）。</p>';
+      <div class="hint">源：${esc(srcTxt)} → 目标：${esc(tgtTxt)} ｜ 模式：${rt.mode==='raw'?'纯原文':'加工话术'} ｜ 关键词：${esc((rt.keywords||[]).join('、'))}${(rt.require_sender_contains||[]).length?(' ｜ 只处理发送者含：'+esc(rt.require_sender_contains.join(','))):''}${(rt.exclude_sender_contains||[]).length?(' ｜ 排除发送者含：'+esc(rt.exclude_sender_contains.join(','))):''}</div>
+    </div>`;}).join('') || '<p class="hint">暂无路由规则（在 config.json 的 routing.routes 中配置）。</p>';
   box.querySelectorAll('[data-rt]').forEach(cb=>cb.onchange=()=>{
     const rt = (cfg.routing.routes||[]).find(x=>x.id===cb.dataset.rt);
     if(rt){ rt.enabled = cb.checked; saveConfig().then(renderRoutes); }
@@ -492,7 +514,7 @@ async function loadRouteLogs(){
     const tr=document.createElement('tr');
     const st = l.shadow ? '<span class="tag gray">影子</span>' : (l.status==='sent'?'<span class="tag green">已发</span>':'<span class="tag red">失败</span>');
     tr.innerHTML = `<td>${esc(l.ts)}</td><td>${esc(l.route_name)}</td>
-      <td>${esc((l.source_chat||'').slice(0,8))}→<br>${esc((l.target_chat||'').slice(0,8))}</td>
+      <td>${groupCell(l.source_chat)}→<br>${groupCell(l.target_chat)}</td>
       <td>${esc(l.sender||'')}<br><span class="hint">${esc(l.tracking_no||'')}</span></td>
       <td>${st}</td><td>${esc(l.forward||l.original||'')}</td>`;
     tb.appendChild(tr);

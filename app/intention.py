@@ -98,6 +98,12 @@ _SYSTEM_PROMPT = """你是电商客服微信群的消息路由助手。根据消
 - "提供核实结果"若指中通快递核实（在中通群跟进的），NONE；仅当明确是仓库发货少件、要打包/发货视频时才 D。
 - "退回中，已优先退款请7日内跟进"退货跟进话术 -> NONE。
 - 开发票、退件验收、赠品送不送、咨询问答 -> NONE。
+- 【进度查询/跟进催促，重点】对已经处理过的单号问进度/催促，都不是新指令 -> NONE：
+  "有退回了吗/退回了吗/有物流了吗/到哪了/处理得怎么样/核实有回复了吗/什么情况了"；
+  "重新联系一下收件人/麻烦尽快处理/再催一下/帮我催催"等对已有工单的跟进催促（不是新的拦截/催件/召回指令）。
+- 只有"首次明确要求"拦截/召回/催件/签收未收到/送错地址核实 才是 B；查进度、催促已有工单一律 NONE。
+- 【京东快递催发货】JDV/JDVB/JDVE 开头单号、或京东/京喜平台订单的"催发货/催揽收/安排发出"，京东走自有快递揽收，不进中通催发群，输出 NONE（客服人工处理京东单）。
+  C 目标只用于需中通/<公司简称>揽收的非京东快递催发货；拿不准是不是京东就 NONE。
 
 【正向规则】
 3. 外部售后对中通单号发明确快递异常指令（拦截/召回/签收未收到/催件/送错地址）-> B。
@@ -181,21 +187,25 @@ class IntentStore:
                 return None
         return None
 
-    def lookup_similar(self, fp):
-        """指纹完全相同的复用历史结果。返回 routes 或 None。"""
+    def lookup_similar(self, fp, norm=''):
+        """指纹相同 且 归一化文本足够相似 才复用，避免“拦截处理得怎么样”(查询)
+        与“拦截”(指令)这种同指纹不同语气互相误判。返回 routes 或 None。"""
         if not fp:
             return None
-        fp_str = '|'.join(fp)
+        from difflib import SequenceMatcher
         with self.db:
             rows = self.db.execute(
-                'SELECT routes,fingerprint,hits FROM intent_memory ORDER BY hits DESC LIMIT 20').fetchall()
-        for routes_json, fp_db, hits in rows:
+                'SELECT routes,fingerprint,norm,hits FROM intent_memory ORDER BY hits DESC LIMIT 30').fetchall()
+        for routes_json, fp_db, norm_db, hits in rows:
             if not fp_db:
                 continue
             db_fp = set(fp_db.split('|'))
             cur = set(fp)
-            # 指纹完全一致，或当前指纹被历史覆盖且动作词数相同 -> 复用
-            if db_fp == cur and cur:
+            if not (db_fp == cur and cur):
+                continue
+            # 指纹相同后，再要求文本相似度达标（查询句 vs 指令句长度/措辞差异大，会被挡下）
+            sim = SequenceMatcher(None, norm or '', norm_db or '').ratio() if norm or norm_db else 1.0
+            if sim >= 0.6:
                 try:
                     return json.loads(routes_json)
                 except Exception:
@@ -223,17 +233,20 @@ class IntentStore:
         return {'memory_total': total, 'llm_learned': llm, 'cache_hits': hits}
 
 
-def classify(sender, text, own_staff, cfg, intent_store, is_robot=False):
+def classify(sender, text, own_staff, cfg, intent_store, is_robot=False, source_role='other'):
     """综合判定一条消息的路由。
     返回 (routes:list[str], source:str)。
       routes: 如 ['B'] / ['B','D'] / [] (NONE)
       source: 'fluff'|'cache_exact'|'cache_similar'|'llm'|'llm_fail'
+      source_role: 来源群角色，用于隔离学习缓存，避免同一句话在不同群/不同身份下串判。
+        'customer_src'=客服源群(外部售后发需求)  'zhongtong'=中通群  'other'=其他
     大模型失败时返回 (None,'llm_fail')，调用方降级关键词。
     """
     # 1. 快速预筛
     if is_fluff(text, sender, own_staff=own_staff, is_robot=is_robot):
         return [], 'fluff'
-    norm = normalize(text)
+    # 缓存签名按“来源群角色”隔离：同内容在客服源群与中通群的处理不同，不能共用一条学习记忆
+    norm = '[' + source_role + ']' + normalize(text)
     fp = fingerprint(text)
 
     # 2. 精确记忆
@@ -243,7 +256,7 @@ def classify(sender, text, own_staff, cfg, intent_store, is_robot=False):
         return cached, 'cache_exact'
 
     # 3. 相似记忆
-    sim = intent_store.lookup_similar(fp)
+    sim = intent_store.lookup_similar(fp, norm=norm)
     if sim is not None and fp:
         intent_store.remember(norm, fp, sender, sim, text, source='cache_similar')
         return sim, 'cache_similar'

@@ -161,9 +161,16 @@ def build_forward(route, msg_content, sender, tracking_no, requester=None, all_n
         tpl = route.get('template') or '【通知】单号{单号}：{来源摘要}'
         numbers_str = ' / '.join(all_numbers or ([tracking_no] if tracking_no else []))
         if route.get('extract_numbers'):
-            # 催发货类：只发快递单号，不带原始长文本；未识别到快递单号则返回 None（不转发）
-            if not all_numbers and not tracking_no:
+            # 催发货类：只发快递单号，不带原始长文本
+            nums = list(all_numbers or ([tracking_no] if tracking_no else []))
+            # 京东快递单号(JDV/JDVB/JDVE等)不走中通催发群，需客服人工走京东揽收 -> 过滤掉
+            if route.get('exclude_number_prefix'):
+                prefs = tuple(route['exclude_number_prefix'])
+                nums = [n for n in nums if not n.upper().startswith(prefs)]
+            if not nums:
+                # 没有可发往该群的快递单号（如全是京东单）-> 不转发，交客服人工处理
                 return None
+            numbers_str = ' / '.join(nums)
             summary = '催发货，请安排优先发出'
         else:
             summary = _result_summary(content) if route.get('at_requester') else _summarize(content)

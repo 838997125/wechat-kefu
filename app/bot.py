@@ -200,7 +200,9 @@ class Bot:
 
     def _route_message(self, m):
         """多群消息路由（大模型意图识别 + 关键词降级）。
-        LLM 判定目标群字母 [B/C/D/A]，映射到具体群；模型失败/关闭时降级关键词路由。"""
+        支持多个“客服源群”（如<品牌A>、聚好麦西帕），规则相同：
+          - 客服源群消息 -> B中通/C催发货/D仓库
+          - 中通群<回写机器人名>失败结果 -> 按单号实际来源回流到对应客服源群并@发单人"""
         rcfg = self.cfg.data.get('routing', {}) or {}
         routes = rcfg.get('routes', []) or []
         if not routes:
@@ -211,73 +213,100 @@ class Bot:
         own_staff = rcfg.get('own_staff', ['<公司简称>'])
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        targets = None  # 目标群字母列表
+        # 客服源群列表（外部售后发需求的群，规则相同）
+        customer_groups = rcfg.get('customer_groups') or ['<品牌A>客服对接群']
+        ZHONGTONG = '药商通c端中通快递沟通群'
+        is_customer_src = m.chat in customer_groups
+        is_zhongtong = (m.chat == ZHONGTONG)
+        if not is_customer_src and not is_zhongtong:
+            return  # 其他监听群（测试群等）不做路由
+
+        targets = None  # 目标字母 [B/C/D/A]
         llm_src = None
         llm_cfg = rcfg.get('llm_intent', {}) or {}
         if llm_cfg.get('enabled'):
             is_robot = '<回写机器人名>' in (m.sender or '')
+            src_role = 'zhongtong' if is_zhongtong else ('customer_src' if is_customer_src else 'other')
             res, llm_src = intention.classify(
-                m.sender, m.content, own_staff, llm_cfg, self.intent_store, is_robot=is_robot)
+                m.sender, m.content, own_staff, llm_cfg, self.intent_store,
+                is_robot=is_robot, source_role=src_role)
             if res is not None:
                 targets = [t for t in res if t in ('B', 'C', 'D', 'A')]
-
-        # 降级或 LLM 关闭：用关键词路由推断目标群
         if targets is None:
-            targets = self._keyword_targets(routes, m, own_staff)
+            targets = self._keyword_targets(routes, m, own_staff, customer_groups)
             llm_src = llm_src or 'keyword'
-
         if not targets:
             return
 
-        # 目标群字母 -> 实际路由配置（必须校验路由的源群与消息所在群一致，避免跨群误映射）
-        by_target = {}
-        for rt in routes:
-            tgt = rt.get('target', '')
-            src = rt.get('source', '')
-            # 源群必须匹配消息所在群，否则该路由对本条消息不适用
-            if src != m.chat:
-                continue
-            if '药商通c端中通快递沟通群' in tgt:
-                by_target.setdefault('B', rt)
-            elif '<物流方>&<公司简称>' in tgt:
-                by_target.setdefault('C', rt)
-            elif 'C端审单发货售后' in tgt:
-                by_target.setdefault('D', rt)
-            elif src == '药商通c端中通快递沟通群':
-                by_target.setdefault('A', rt)
+        # 按字母取路由模板（target 固定，不依赖具体哪个客服源群）
+        tmpl = self._route_templates(routes)
 
-        # B群<回写机器人名>失败结果只允许回A；B群其他消息一律不路由
-        if m.chat == '药商通c端中通快递沟通群':
-            is_robot = '<回写机器人名>' in (m.sender or '')
-            if not is_robot:
+        if is_zhongtong:
+            # 中通群：仅<回写机器人名>明确拦截失败才回流；其他消息不路由
+            if '<回写机器人名>' not in (m.sender or '') or 'A' not in targets:
                 return
-            targets = [t for t in targets if t == 'A']
-            # 单号归属校验：只有该单号确实是本客服群(A群)外部售后发起的，才回流A；
-            # 别的业务线在中通群发的单不回流（客服明确要求）
-            if 'A' in targets:
-                A = '<品牌A>客服对接群'
-                nums = all_numbers or ([tracking] if tracking else [])
-                owned = any(
-                    self.storage.find_sender_by_tracking(A, no, own_staff=own_staff)
-                    for no in nums if no
-                )
-                if not owned:
-                    log.info('【回流拦截】单号未在本客服群发起，不回传A群: %s',
-                             (m.content or '')[:50].replace('\n', ' '))
-                    targets = [t for t in targets if t != 'A']
-        # A群发出的消息只能转 B/C/D（不能回A自己）
-        if m.chat == '<品牌A>客服对接群':
-            targets = [t for t in targets if t in ('B', 'C', 'D')]
+            # 单号归属：单号在哪个客服源群由外部售后发起，就回流到哪个群
+            nums = all_numbers or ([tracking] if tracking else [])
+            origin = self._find_origin_group(nums, customer_groups, own_staff)
+            if not origin:
+                log.info('【回流拦截】单号未在任何客服源群发起，不回流: %s',
+                         (m.content or '')[:50].replace('\n', ' '))
+                return
+            rt = tmpl.get('A')
+            if rt:
+                self._process_one_route(rt, m, shadow, tracking, all_numbers, rcfg, own_staff, ts,
+                                        llm_src=llm_src, target_override=origin)
+            return
 
-        for letter in targets:
-            rt = by_target.get(letter)
+        # 客服源群消息：只能转 B/C/D（不能回流自己）
+        for letter in [t for t in targets if t in ('B', 'C', 'D')]:
+            rt = tmpl.get(letter)
             if rt:
                 self._process_one_route(rt, m, shadow, tracking, all_numbers, rcfg, own_staff, ts,
                                         llm_src=llm_src)
 
-    def _keyword_targets(self, routes, m, own_staff):
-        """降级：关键词路由 -> 目标群字母列表。"""
-        matched = route_engine.match_routes(routes, m.chat, m.sender, m.content, m.mtype, own_staff=own_staff)
+    def _route_templates(self, routes):
+        """按目标字母取一个路由模板（B/C/D 的 target 固定唯一，A=回流话术模板）。"""
+        tmpl = {}
+        for rt in routes:
+            tgt = rt.get('target', '')
+            src = rt.get('source', '')
+            if '药商通c端中通快递沟通群' in tgt:
+                tmpl.setdefault('B', rt)
+            elif '<物流方>&<公司简称>' in tgt:
+                tmpl.setdefault('C', rt)
+            elif 'C端审单发货售后' in tgt:
+                tmpl.setdefault('D', rt)
+            if src == '药商通c端中通快递沟通群':
+                tmpl.setdefault('A', rt)
+        return tmpl
+
+    def _find_origin_group(self, nums, customer_groups, own_staff):
+        """单号在哪个客服源群由外部售后发起，返回该群名；都没找到返回 None。"""
+        for no in nums:
+            if not no:
+                continue
+            for g in customer_groups:
+                if self.storage.find_sender_by_tracking(g, no, own_staff=own_staff):
+                    return g
+        return None
+
+
+    def _keyword_targets(self, routes, m, own_staff, customer_groups=None):
+        """降级：关键词路由 -> 目标群字母列表。
+        客服源群共用同一套规则模板（规则挂在第一个客服源群名下），按当前群套用匹配。"""
+        customer_groups = customer_groups or ['<品牌A>客服对接群']
+        eff_routes = routes
+        if m.chat in customer_groups:
+            primary = customer_groups[0]
+            eff_routes = []
+            for rt in routes:
+                # 复用挂在第一个客服源群下的 A->B/C/D 规则作为模板（回流规则源是中通群，不含）
+                if rt.get('source') == primary:
+                    r2 = dict(rt)
+                    r2['source'] = m.chat
+                    eff_routes.append(r2)
+        matched = route_engine.match_routes(eff_routes, m.chat, m.sender, m.content, m.mtype, own_staff=own_staff)
         letters = []
         for rt in matched:
             tgt = rt.get('target', '')
@@ -291,8 +320,10 @@ class Bot:
                 letters.append('A')
         return letters
 
-    def _process_one_route(self, route, m, shadow, tracking, all_numbers, rcfg, own_staff, ts, llm_src=''):
-        """处理单条命中路由：去重、生成内容、影子记录或正式转发。"""
+    def _process_one_route(self, route, m, shadow, tracking, all_numbers, rcfg, own_staff, ts, llm_src='', target_override=None):
+        """处理单条命中路由：去重、生成内容、影子记录或正式转发。
+        target_override: 覆盖目标群（用于<回写机器人名>失败结果回流到单号实际来源的客服群）。"""
+        target = target_override or route.get('target')
         # 去重 key：按单号去重的路由（催发货）用单号集合，否则用原文
         dedup_key = route_engine.route_dedup_key(route, m.content, all_numbers=all_numbers)
         rid = route.get('id', route.get('name', ''))
@@ -301,17 +332,16 @@ class Bot:
             return
         if self.storage.route_log_exists(rid, dedup_key, shadow):
             return
-        # 若需要@发单人：按单号在目标群（通常是A群）回溯发该单号的客服昵称
+        # 若需要@发单人：按单号在目标群（回流时=单号实际来源客服群）回溯发该单号的客服昵称
         requester = ''
         if route.get('at_requester') and tracking:
             requester = self.storage.find_sender_by_tracking(
-                route.get('target'), tracking, own_staff=rcfg.get('own_staff'))
+                target, tracking, own_staff=rcfg.get('own_staff'))
         forward_text = route_engine.build_forward(
             route, m.content, m.sender, tracking, requester=requester, all_numbers=all_numbers)
         if forward_text is None:
             # 该路由暂不满足转发条件（如催发货但消息里没有快递单号），跳过不记日志
             return
-        target = route.get('target')
         if shadow:
             self.storage.route_log({
                 'ts': ts, 'route_name': rid, 'source_chat': m.chat,
