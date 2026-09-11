@@ -28,10 +28,11 @@ def setup_logging(log_path):
     fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', '%Y-%m-%d %H:%M:%S')
     fh = RotatingFileHandler(log_path, maxBytes=2_000_000, backupCount=5, encoding='utf-8')
     fh.setFormatter(fmt)
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
     logger.addHandler(fh)
-    logger.addHandler(sh)
+    if sys.stdout is not None:  # pythonw 无控制台时 sys.stdout 为 None，避免 StreamHandler 报错
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(fmt)
+        logger.addHandler(sh)
     return logger
 
 

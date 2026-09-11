@@ -22,6 +22,28 @@ def _norm(tok):
     return tok.upper() if tok.upper().startswith('JD') else tok
 
 
+# 人工规则关键词分隔符：顿号/逗号/分号/空白/换行
+_KW_SPLIT = re.compile(r'[、,，;；\n\r\t]+')
+
+
+def parse_keywords(pattern):
+    """把用户填的“转发内容/关键词”拆成非空关键词列表。"""
+    return [k.strip() for k in _KW_SPLIT.split(str(pattern or '')) if k.strip()]
+
+
+def manual_rule_match(pattern, text):
+    """人工规则：文本包含任一所填关键词即命中（大小写不敏感，去空格）。
+    若 pattern 本身是一整段（无分隔符），按整段子串匹配。"""
+    t = str(text or '').replace(' ', '')
+    kws = parse_keywords(pattern)
+    if not kws:
+        return False
+    for k in kws:
+        if k.replace(' ', '').lower() in t.lower():
+            return True
+    return False
+
+
 def extract_tracking_no(text):
     """提取第一个快递单号；没有则空串。"""
     for pat in _TRACKING_PATTERNS:

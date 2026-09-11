@@ -109,7 +109,7 @@ def main():
 
     # 4. 自检
     print('\n[4/6] 自检依赖 ...')
-    check = "import flask,wxauto4,psutil,openpyxl;print('  核心依赖导入成功')"
+    check = "import flask,wxauto4,psutil,openpyxl,pystray,PIL;print('  核心依赖导入成功')"
     subprocess.run([py, '-c', check], check=True)
     if not os.path.exists(os.path.join(ROOT, 'config.json')):
         ex = os.path.join(ROOT, 'config.example.json')
@@ -121,21 +121,63 @@ def main():
     print('\n[5/6] 微信检查')
     print('  请确认已安装微信 4.1.8.107（安装包在 runtime 目录），并登录、主窗口保持打开。')
 
-    # 6. 开机自启
-    print('\n[6/6] 注册开机自启 ...')
-    guard = os.path.join(ROOT, '客服助手开机自启.bat')
-    sch = ['schtasks', '/create', '/tn', 'KefuWechatBot', '/tr',
-           '"%s"' % guard, '/sc', 'onlogon', '/rl', 'highest', '/f']
-    rr = subprocess.run(sch, capture_output=True, text=True)
-    if rr.returncode == 0:
-        print('  开机自启已注册')
-    else:
-        print('  计划任务注册失败（可右键以管理员身份重跑，或手动双击 app 目录开机自启脚本）')
+    # 6. 桌面快捷方式 + 开机自启（托盘无黑窗）
+    print('\n[6/6] 创建桌面快捷方式与开机自启 ...')
+    launcher = os.path.join(ROOT, '启动客服助手.vbs')
+    _create_desktop_shortcut(launcher)
+    _enable_autostart(launcher, ROOT)
 
     print('\n' + '=' * 56)
-    print('全部完成！下一步：双击 app\\启动客服助手.bat')
+    print('全部完成！双击桌面「客服微信助手」或 app\\启动客服助手.vbs 即可（无黑窗，右下角托盘管理）')
     print('面板 http://127.0.0.1:43991  密码默认 kefu2026（请尽快修改）')
     print('=' * 56)
+
+
+def _vbs_run_line(launcher):
+    return (
+        'Set fso = CreateObject("Scripting.FileSystemObject")\r\n'
+        'Set ws = CreateObject("WScript.Shell")\r\n'
+        'd = fso.GetParentFolderName(WScript.ScriptFullName)\r\n'
+        'p = d & "\\.venv\\Scripts\\pythonw.exe"\r\n'
+        'If Not fso.FileExists(p) Then p = "pythonw.exe"\r\n'
+        'ws.Run """" & p & """ """ & d & "\\tray.py""", 0, False\r\n'
+    )
+
+
+def _enable_autostart(launcher, app_dir):
+    """在当前用户启动文件夹放一个 VBS，登录后静默启动托盘。"""
+    try:
+        startup = os.path.join(os.environ.get('APPDATA', ''),
+                               r'Microsoft\Windows\Start Menu\Programs\Startup')
+        os.makedirs(startup, exist_ok=True)
+        vbs = (
+            'Set ws = CreateObject("WScript.Shell")\r\n'
+            'ws.Run "wscript.exe ""%s""", 0, False\r\n' % launcher
+        )
+        with open(os.path.join(startup, '客服微信助手托盘.vbs'), 'w', encoding='gbk') as f:
+            f.write(vbs)
+        print('  开机自启已开启（可在托盘菜单关闭）')
+    except Exception as e:
+        print('  开机自启设置失败:', e)
+
+
+def _create_desktop_shortcut(launcher):
+    """用 PowerShell(WScript.Shell) 在桌面创建指向 VBS 的快捷方式。"""
+    try:
+        desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
+        lnk = os.path.join(desktop, '客服微信助手.lnk')
+        ps = (
+            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('%s');"
+            "$s.TargetPath='wscript.exe';$s.Arguments='\"%s\"';"
+            "$s.WorkingDirectory='%s';$s.IconLocation='%s';$s.Save()"
+        ) % (lnk, launcher, os.path.dirname(launcher),
+             os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32', 'shell32.dll'))
+        subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps],
+                       capture_output=True)
+        if os.path.exists(lnk):
+            print('  桌面快捷方式已创建')
+    except Exception as e:
+        print('  桌面快捷方式创建失败:', e)
 
 
 if __name__ == '__main__':

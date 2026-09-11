@@ -131,6 +131,7 @@ class Bot:
         s = {
             'status': self.status_msg,
             'paused': self.paused,
+            'give_up': getattr(self.driver, 'give_up', False),
             'wechat_ready': self.driver.ready and self.driver.online(),
             'account': self.driver.account,
             'started_at': self.started_at.strftime('%Y-%m-%d %H:%M:%S') if self.started_at else None,
@@ -264,18 +265,33 @@ class Bot:
         ZHONGTONG = '药商通c端中通快递沟通群'
         is_customer_src = m.chat in customer_groups
         is_zhongtong = (m.chat == ZHONGTONG)
+
+        # ===== 人工反馈层（优先级最高）=====
+        # 1) 精确忽略（“仅忽略此条”或“忽略并学习”写入的归一化签名）→ 一律不转发
+        src_role = 'zhongtong' if is_zhongtong else ('customer_src' if is_customer_src else 'other')
+        role_norm = '[' + src_role + ']' + intention.normalize(m.content)
+        if role_norm in self.storage.ignore_norm_set():
+            log.info('【人工忽略】命中人工标注，不转发 [%s]: %s', m.chat,
+                     (m.content or '')[:50].replace('\n', ' '))
+            return
+
+        # 2) 人工转发规则（关键词精确匹配，源群/目标群用户自定义）→ 命中即按规则转发，跳过自动路由
+        manual = self._match_manual_rules(m, shadow)
+        if manual:
+            return
+
         if not is_customer_src and not is_zhongtong:
-            return  # 其他监听群（测试群等）不做路由
+            return  # 其他监听群（测试群等）不做自动路由（人工规则上面已处理）
 
         targets = None  # 目标字母 [B/C/D/A]
         llm_src = None
         llm_cfg = rcfg.get('llm_intent', {}) or {}
         if llm_cfg.get('enabled'):
             is_robot = '<回写机器人名>' in (m.sender or '')
-            src_role = 'zhongtong' if is_zhongtong else ('customer_src' if is_customer_src else 'other')
+            examples = self.storage.feedback_examples(limit_per_kind=15)
             res, llm_src = intention.classify(
                 m.sender, m.content, own_staff, llm_cfg, self.intent_store,
-                is_robot=is_robot, source_role=src_role)
+                is_robot=is_robot, source_role=src_role, examples=examples)
             if res is not None:
                 targets = [t for t in res if t in ('B', 'C', 'D', 'A')]
         if targets is None:
@@ -310,6 +326,56 @@ class Bot:
             if rt:
                 self._process_one_route(rt, m, shadow, tracking, all_numbers, rcfg, own_staff, ts,
                                         llm_src=llm_src)
+
+    def _match_manual_rules(self, m, shadow):
+        """人工转发规则：源群+关键词命中即转发原文到目标群（确定性，优先级高于自动路由）。
+        返回 True 表示已被人工规则处理（调用方应跳过自动路由）。"""
+        try:
+            rules = self.storage.manual_rule_list(enabled_only=True)
+        except Exception:
+            return False
+        hit_any = False
+        for r in rules:
+            if r.get('source_chat') != m.chat:
+                continue
+            if not route_engine.manual_rule_match(r.get('pattern', ''), m.content):
+                continue
+            hit_any = True
+            try:
+                self.storage.manual_rule_hit(r['id'])
+            except Exception:
+                pass
+            self._process_manual_rule(r, m, shadow)
+        return hit_any
+
+    def _process_manual_rule(self, rule, m, shadow):
+        rid = 'manual:%s' % rule.get('id')
+        target = rule.get('target_chat')
+        forward_text = (m.content or '').strip()
+        if not target or not forward_text:
+            return
+        # 去重：同一规则+同一原文 不重复（影子/正式分开）
+        if not shadow and self.storage.route_forwarded(rid, forward_text):
+            return
+        if self.storage.route_log_exists(rid, forward_text, shadow):
+            return
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if shadow:
+            self.storage.route_log({
+                'ts': ts, 'route_name': rid, 'source_chat': m.chat, 'target_chat': target,
+                'sender': m.sender, 'tracking_no': route_engine.extract_tracking_no(m.content),
+                'mode': 'manual', 'shadow': True, 'original': forward_text,
+                'forward': forward_text, 'status': 'shadow'})
+            log.info('【影子·人工规则】[%s] -> %s：%s', m.chat, target, forward_text[:60].replace('\n', ' '))
+            return
+        ok = self._do_send_route(target, forward_text)
+        self.storage.route_log({
+            'ts': ts, 'route_name': rid, 'source_chat': m.chat, 'target_chat': target,
+            'sender': m.sender, 'tracking_no': route_engine.extract_tracking_no(m.content),
+            'mode': 'manual', 'shadow': False, 'original': forward_text,
+            'forward': forward_text, 'status': 'sent' if ok else 'failed'})
+        log.info('【人工规则转发】%s -> %s：%s（%s）', m.chat, target, forward_text[:60].replace('\n', ' '),
+                 '成功' if ok else '失败')
 
     def _route_templates(self, routes):
         """按目标字母取一个路由模板（B/C/D 的 target 固定唯一，A=回流话术模板）。"""

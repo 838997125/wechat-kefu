@@ -156,11 +156,28 @@
         <div id="route-list" style="margin-top:14px"></div>
       </div>
       <div class="card">
+        <h2>➕ 添加人工转发规则
+          <button class="btn" id="btn-refresh-manual">刷新</button>
+        </h2>
+        <p class="hint">客服人工指定：源群里出现含“转发内容关键词”的消息，就转发到目标群（优先级高于自动规则）。多个关键词用顿号/逗号分隔，命中任一即转发。同时作为正样本帮助 AI 学习。</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <label class="field" style="flex:1;min-width:150px"><span class="lab">源群</span>
+            <select id="mr-source"></select></label>
+          <label class="field" style="flex:1;min-width:150px"><span class="lab">目标群</span>
+            <select id="mr-target"></select></label>
+          <label class="field" style="flex:2;min-width:220px"><span class="lab">转发内容关键词（、,分隔）</span>
+            <input type="text" id="mr-pattern" placeholder="如：拦截,召回,催件"></label>
+          <button class="btn primary" id="btn-add-manual">添加规则</button>
+        </div>
+        <table style="margin-top:12px"><thead><tr><th style="width:120px">源群</th><th style="width:120px">目标群</th><th>关键词</th><th style="width:60px">命中</th><th style="width:120px">操作</th></tr></thead>
+        <tbody id="manual-tbody"></tbody></table>
+      </div>
+      <div class="card">
         <h2>转发日志
           <button class="btn" id="btn-refresh-routes">刷新</button>
         </h2>
-        <p class="hint">影子=预演记录；sent=已发送；failed=发送失败。正式转发前请先确认影子日志准确。</p>
-        <table><thead><tr><th style="width:140px">时间</th><th>路由</th><th style="width:130px">源→目标</th><th style="width:130px">发送人/单号</th><th style="width:70px">状态</th><th>转发内容预览</th></tr></thead>
+        <p class="hint">影子=预演记录；sent=已发送；failed=发送失败。每条可点“忽略此条”（仅这一条不再处理）或“忽略并学习”（以后同类都不转，并教 AI）。</p>
+        <table><thead><tr><th style="width:140px">时间</th><th>路由</th><th style="width:120px">源→目标</th><th style="width:120px">发送人/单号</th><th style="width:60px">状态</th><th>转发内容预览</th><th style="width:150px">操作</th></tr></thead>
         <tbody id="routes-tbody"></tbody></table>
       </div>
     </div>
@@ -310,6 +327,11 @@ window.fetch = async function(url, opts){
   }
   return resp;
 };
+// 便捷 API：返回解析后的 JSON
+async function api(url, opts){
+  const r = await fetch(url, opts);
+  return r.json().catch(()=>({ok:r.ok}));
+}
 // 启动时检查是否已登录（本机访问免登）
 async function checkAuth(){
   try{
@@ -328,7 +350,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   $('page-'+b.dataset.page).classList.add('active');
   if(b.dataset.page==='messages') loadMessages();
   if(b.dataset.page==='status') refreshLogs();
-  if(b.dataset.page==='routes'){ renderRoutes(); loadRouteLogs(); }
+  if(b.dataset.page==='routes'){ renderRoutes(); loadRouteLogs(); loadManualRules(); }
 });
 
 // ---- 配置 ----
@@ -513,14 +535,74 @@ async function loadRouteLogs(){
   (j.logs||[]).forEach(l=>{
     const tr=document.createElement('tr');
     const st = l.shadow ? '<span class="tag gray">影子</span>' : (l.status==='sent'?'<span class="tag green">已发</span>':'<span class="tag red">失败</span>');
+    let act;
+    if(l.ignored){
+      act = `<span class="tag" style="background:#eee;color:#888">已忽略</span>
+             <button class="btn sm" data-uid="${l.id}">撤销</button>`;
+      tr.style.opacity='0.5';
+    }else{
+      act = `<button class="btn sm" data-once="${l.id}" title="仅这一条不再处理">忽略此条</button>
+             <button class="btn sm" data-learn="${l.id}" title="以后同类都不转发，并教AI识别">忽略并学习</button>`;
+    }
     tr.innerHTML = `<td>${esc(l.ts)}</td><td>${esc(l.route_name)}</td>
       <td>${groupCell(l.source_chat)}→<br>${groupCell(l.target_chat)}</td>
       <td>${esc(l.sender||'')}<br><span class="hint">${esc(l.tracking_no||'')}</span></td>
-      <td>${st}</td><td>${esc(l.forward||l.original||'')}</td>`;
+      <td>${st}</td><td>${esc(l.forward||l.original||'')}</td><td>${act}</td>`;
+    tr.querySelectorAll('button').forEach(btn=>{
+      btn.onclick = async ()=>{
+        if(btn.dataset.uid){
+          await api('/api/routes/log/'+btn.dataset.uid+'/unignore',{method:'POST'});
+        }else if(btn.dataset.once){
+          await api('/api/routes/log/'+btn.dataset.once+'/ignore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:'once'})});
+          toast('已忽略此条');
+        }else if(btn.dataset.learn){
+          await api('/api/routes/log/'+btn.dataset.learn+'/ignore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:'learn'})});
+          toast('已忽略并让 AI 学习：以后同类不转发');
+        }
+        loadRouteLogs();
+      };
+    });
     tb.appendChild(tr);
   });
 }
 $('btn-refresh-routes').onclick = loadRouteLogs;
+
+// ---- 人工转发规则 ----
+function monitoredGroupOptions(sel){
+  const groups = (cfg.chats||[]).map(c=>c.name);
+  sel.innerHTML = groups.map(g=>`<option value="${esc(g)}">${esc(shortGroup(g)||g)}</option>`).join('');
+}
+async function loadManualRules(){
+  monitoredGroupOptions($('mr-source'));
+  monitoredGroupOptions($('mr-target'));
+  const j = await (await fetch('/api/manual_rules')).json();
+  const tb=$('manual-tbody'); tb.innerHTML='';
+  (j.rules||[]).forEach(r=>{
+    const tr=document.createElement('tr');
+    if(!r.enabled) tr.style.opacity='0.5';
+    tr.innerHTML = `<td>${groupCell(r.source_chat)}</td><td>${groupCell(r.target_chat)}</td>
+      <td>${esc(r.pattern)} <span class="hint">×${r.hits||0}</span></td>
+      <td><label class="switch"><input type="checkbox" ${r.enabled?'checked':''} data-id="${r.id}" class="mr-en"></label></td>
+      <td><button class="btn sm danger" data-del="${r.id}">删除</button></td>`;
+    tr.querySelector('.mr-en').onchange = async (e)=>{
+      await api('/api/manual_rules/'+r.id+'/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:e.target.checked})});
+      loadManualRules();
+    };
+    tr.querySelector('[data-del]').onclick = async ()=>{
+      if(confirm('删除这条人工转发规则？')){ await api('/api/manual_rules/'+r.id,{method:'DELETE'}); loadManualRules(); }
+    };
+    tb.appendChild(tr);
+  });
+}
+$('btn-refresh-manual').onclick = loadManualRules;
+$('btn-add-manual').onclick = async ()=>{
+  const body={source_chat:$('mr-source').value, target_chat:$('mr-target').value, pattern:$('mr-pattern').value.trim()};
+  if(!body.pattern){ toast('请填写转发内容关键词'); return; }
+  if(body.source_chat===body.target_chat){ toast('源群和目标群不能相同'); return; }
+  const r = await api('/api/manual_rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.ok){ $('mr-pattern').value=''; toast('已添加人工规则，AI 同步学习'); loadManualRules(); }
+  else toast(r.error||'添加失败');
+};
 
 // ---- 欢迎语 ----
 function renderWelcome(){

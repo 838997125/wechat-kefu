@@ -192,6 +192,86 @@ class PanelServer:
             shadow = None if shadow in (None, '', 'all') else (shadow == '1')
             return jsonify({'ok': True, 'logs': self.storage.route_recent(limit=300, shadow=shadow)})
 
+        # ---- 人工反馈：忽略某条转发日志（两档）----
+        @app.post('/api/routes/log/<int:log_id>/ignore')
+        def route_log_ignore(log_id):
+            data = request.get_json(force=True, silent=True) or {}
+            scope = data.get('scope', 'learn')  # once=仅此条  learn=此条+学习
+            row = self.storage.route_log_get(log_id)
+            if not row:
+                return jsonify({'ok': False, 'error': '日志不存在'}), 404
+            self.storage.set_log_ignored(log_id, True)
+            from .. import intention as _it
+            content = row.get('original') or row.get('forward') or ''
+            source = row.get('source_chat') or ''
+            rcfg = self.cfg.data.get('routing', {}) or {}
+            cgroups = rcfg.get('customer_groups') or []
+            role = 'zhongtong' if source == '药商通c端中通快递沟通群' else (
+                'customer_src' if source in cgroups else 'other')
+            norm = '[' + role + ']' + _it.normalize(content)
+            if scope == 'once':
+                self.storage.feedback_add('ignore_once', source, content, norm, log_id=log_id)
+            else:
+                # 学习忽略：精确签名压制（写入意图库 routes=[]）+ 作为负样本喂 LLM
+                self.storage.feedback_add('ignore', source, content, norm, log_id=log_id)
+                try:
+                    fp = _it.fingerprint(content)
+                    self.bot.intent_store.remember(norm, fp, row.get('sender', ''), [], content, source='manual')
+                except Exception as e:
+                    log.warning('写入忽略学习样本失败: %s', e)
+            return jsonify({'ok': True, 'scope': scope})
+
+        @app.post('/api/routes/log/<int:log_id>/unignore')
+        def route_log_unignore(log_id):
+            self.storage.set_log_ignored(log_id, False)
+            self.storage.feedback_delete_by_log(log_id)
+            return jsonify({'ok': True})
+
+        # ---- 人工转发规则 ----
+        @app.get('/api/manual_rules')
+        def manual_rules_list():
+            return jsonify({'ok': True, 'rules': self.storage.manual_rule_list()})
+
+        @app.post('/api/manual_rules')
+        def manual_rules_add():
+            data = request.get_json(force=True, silent=True) or {}
+            source = (data.get('source_chat') or '').strip()
+            target = (data.get('target_chat') or '').strip()
+            pattern = (data.get('pattern') or '').strip()
+            if not source or not target or not pattern:
+                return jsonify({'ok': False, 'error': '源群、目标群、转发内容均必填'}), 400
+            if source == target:
+                return jsonify({'ok': False, 'error': '源群和目标群不能相同'}), 400
+            rid = self.storage.manual_rule_add(source, target, pattern, data.get('note', ''))
+            # 作为正样本喂 LLM（帮助理解同类措辞）
+            self.storage.feedback_add('forward', source, pattern, '', target_chat=target)
+            return jsonify({'ok': True, 'id': rid})
+
+        @app.post('/api/manual_rules/<int:rule_id>/toggle')
+        def manual_rules_toggle(rule_id):
+            data = request.get_json(force=True, silent=True) or {}
+            self.storage.manual_rule_set_enabled(rule_id, bool(data.get('enabled', True)))
+            return jsonify({'ok': True})
+
+        @app.delete('/api/manual_rules/<int:rule_id>')
+        def manual_rules_delete(rule_id):
+            self.storage.manual_rule_delete(rule_id)
+            return jsonify({'ok': True})
+
+        # ---- 停止整个服务进程（托盘/面板用）----
+        @app.post('/api/bot/shutdown')
+        def bot_shutdown():
+            import os, threading
+            def _exit():
+                time.sleep(0.6)
+                try:
+                    self.bot.stop()
+                except Exception:
+                    pass
+                os._exit(0)
+            threading.Thread(target=_exit, daemon=True).start()
+            return jsonify({'ok': True})
+
     def run(self, host='0.0.0.0'):
         # 绑定 0.0.0.0 支持局域网客服访问（带登录密码认证）
         logging.getLogger('werkzeug').setLevel(logging.ERROR)

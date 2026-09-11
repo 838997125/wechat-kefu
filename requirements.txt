@@ -1,5 +1,6 @@
-# 运行依赖（Python 3.10–3.12 推荐 3.12）
 flask>=3.0
 wxauto4
-# 打包依赖（仅构建时需要）：
-# pyinstaller>=6.0
+psutil
+openpyxl
+pystray>=0.19
+pillow>=10.0

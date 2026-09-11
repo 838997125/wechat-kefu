@@ -114,13 +114,38 @@ _SYSTEM_PROMPT = """你是电商客服微信群的消息路由助手。根据消
 只输出 JSON：{"routes": ["B"或"C"或"D"或"A"], "reason": "简短原因"}。没有目标就 {"routes": [], "reason": "..."}。"""
 
 
-def _call_llm(sender, text, cfg, timeout=20):
+def _build_examples_block(examples):
+    """把人工标注样本拼成 prompt 片段（正负样本各最多15条）。人工反馈优先级最高。"""
+    if not examples:
+        return ''
+    lines = []
+    neg = examples.get('negative') or []
+    pos = examples.get('positive') or []
+    if pos:
+        lines.append('【人工标注：以下措辞属于“需要转发”的需求，遇到同类应转发】')
+        for e in pos[:15]:
+            tgt = e.get('target_chat') or ''
+            lines.append('  · 类似「%s」%s' % ((e.get('content') or '')[:50],
+                                              ('应转至目标群：' + tgt) if tgt else ''))
+    if neg:
+        lines.append('【人工标注：以下措辞一律判 NONE（不转发），优先级高于上面的通用规则】')
+        for e in neg[:15]:
+            lines.append('  · 「%s」' % (e.get('content') or '')[:50])
+    return '\n'.join(lines) + '\n\n'
+
+
+def _call_llm(sender, text, cfg, timeout=20, examples=None):
     """调用火山方舟 ark-code-latest。返回 routes 列表；失败返回 None。"""
     api_key = cfg.get('api_key', '')
     base = cfg.get('base_url', 'https://ark.cn-beijing.volces.com/api/plan/v3').rstrip('/')
     model = cfg.get('model', 'ark-code-latest')
     if not api_key:
         return None
+    sys_prompt = _SYSTEM_PROMPT
+    ex_block = _build_examples_block(examples)
+    if ex_block:
+        # 插到输出格式说明之前，确保人工样本被模型优先参考
+        sys_prompt = _SYSTEM_PROMPT.replace('只输出 JSON：', ex_block + '以上人工标注优先级最高。\n只输出 JSON：')
     user = f'发送人：{sender}\n消息内容：{text}\n请判断路由：'
     body = json.dumps({
         'model': model,
@@ -233,7 +258,7 @@ class IntentStore:
         return {'memory_total': total, 'llm_learned': llm, 'cache_hits': hits}
 
 
-def classify(sender, text, own_staff, cfg, intent_store, is_robot=False, source_role='other'):
+def classify(sender, text, own_staff, cfg, intent_store, is_robot=False, source_role='other', examples=None):
     """综合判定一条消息的路由。
     返回 (routes:list[str], source:str)。
       routes: 如 ['B'] / ['B','D'] / [] (NONE)
@@ -263,7 +288,7 @@ def classify(sender, text, own_staff, cfg, intent_store, is_robot=False, source_
 
     # 4. 调大模型
     llm_cfg = cfg or {}
-    routes = _call_llm(sender, text, llm_cfg)
+    routes = _call_llm(sender, text, llm_cfg, examples=examples)
     if routes is None:
         return None, 'llm_fail'
     routes = routes or []
