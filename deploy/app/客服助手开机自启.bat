@@ -9,9 +9,11 @@ if exist ".venv\Scripts\python.exe" (
     where python >nul 2>nul && set "PY=python"
 )
 
-:loop
-echo [%date% %time%] Starting Kefu Wechat Bot ...
+echo Starting Kefu Wechat Bot ...
+echo The bot runs in foreground. It will NOT auto-restart on exit.
+echo If it stops because WeChat failed to connect, log into WeChat and start this again manually.
+echo.
 "%PY%" run.py
-echo [%date% %time%] Bot exited, restart in 5 seconds ...
-timeout /t 5 /nobreak >nul
-goto loop
+echo.
+echo Bot has stopped. Check the messages above. Press a key to close.
+pause >nul

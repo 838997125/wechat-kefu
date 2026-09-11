@@ -60,8 +60,17 @@ class Bot:
             try:
                 self._drain_commands()
                 self.cfg.load()  # 热加载
-                # 心跳探测：微信重启后旧 wxauto 句柄可能失效，主动检测并自愈重连
+                # 已达重连上限、需人工介入：停止自动循环，不再碰微信
+                if getattr(self.driver, 'give_up', False):
+                    self.status_msg = '微信连接失败已停止自动重试，请人工确认微信登录后重启服务'
+                    log.error('微信连续 %d 次连接失败，停止自动重试，等待人工重启服务。',
+                              getattr(self.driver, 'max_connect_attempts', 3))
+                    break
+                # 心跳探测：微信重启后旧 wxauto 句柄可能失效，主动检测并自愈重连（受3次上限约束）
                 self.driver.heartbeat()
+                # 重连达到上限（give_up）则本轮不再读消息，下一轮循环会退出
+                if getattr(self.driver, 'give_up', False):
+                    continue
                 if not self.paused and self.driver.ready:
                     for m in self.driver.poll(self.cfg.chats()):
                         self._on_message(m)
@@ -69,15 +78,19 @@ class Bot:
                     time.sleep(2)
             except Exception as e:
                 log.error('轮询异常: %s', e)
-                # 异常时也尝试自愈
                 try:
                     self.driver.ready = False
-                    self.driver.heal_if_needed(force=True)
+                    if not getattr(self.driver, 'give_up', False):
+                        self.driver.heartbeat(force_ui=True)
                 except Exception:
                     pass
+                # 连接已放弃则退出工作循环，等人工重启
+                if getattr(self.driver, 'give_up', False):
+                    self.status_msg = '微信连接失败已停止自动重试，请人工确认微信登录后重启服务'
+                    break
                 time.sleep(2)
             time.sleep(float(self.cfg.general().get('poll_interval_sec', 1.5)))
-        self.status_msg = '已停止'
+        self.status_msg = '已停止（如需运行请重新启动服务）' if getattr(self.driver, 'give_up', False) else '已停止'
 
     # ---------- 面板命令队列（wxauto 对象有线程亲和性，必须在 bot 线程调用） ----------
 

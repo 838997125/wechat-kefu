@@ -137,15 +137,28 @@ class WxDriver:
         # 真实 UI 心跳间隔（秒）：低频切换窗口，避免干扰用户打字；部署专用主机可调小
         self._hb_ui_interval = float(general_cfg.get('heartbeat_ui_interval_sec', 120))
         self._last_ui_hb = 0.0
+        # 连接/重连失败上限：累计失败超过此次数即放弃自动重试，等人工处理（防止反复拉起微信拖垮机器）
+        self.max_connect_attempts = int(general_cfg.get('max_connect_attempts', 3))
+        self.connect_attempts = 0   # 本轮连接尝试累计（成功后清零）
+        self.give_up = False        # 是否已放弃自动重连，需人工重启服务
+
+    def reset_give_up(self):
+        """人工恢复后可调用以重置放弃状态（重启服务即全新实例，通常无需调用）。"""
+        self.give_up = False
+        self.connect_attempts = 0
+        self._fail_streak = 0
 
     # ---- 生命周期 ----
 
-    def start(self, retries=999):
-        """连接微信；微信未就绪时持续重试（面板可看到状态）。"""
+    def start(self, retries=None):
+        """连接微信。
+        retries 参数已弃用（保留兼容旧调用），失败次数统一受 max_connect_attempts 控制：
+        最多尝试 max_connect_attempts 次，仍连不上就置 give_up=True 并抛异常，交由人工重启，
+        不再无限重试、不再反复拉起微信窗口（避免把电脑拖垮）。"""
         from wxauto4 import WeChat
-        attempt = 0
-        while True:
-            attempt += 1
+        while self.connect_attempts < self.max_connect_attempts:
+            self.connect_attempts += 1
+            n = self.connect_attempts
             try:
                 try:
                     wx = WeChat(ads=False)
@@ -154,20 +167,28 @@ class WxDriver:
                 self.wx = wx
                 self.account = wx.GetMyInfo()
                 self.ready = True
+                self.give_up = False
+                self.connect_attempts = 0
+                self._fail_streak = 0
                 self._baseline.clear()
                 log.info('微信已连接: %s', self.account)
                 return True
             except Exception as e:
                 self.ready = False
-                if attempt >= retries:
-                    raise
-                # 每 3 次重试尝试自动拉起微信主窗口（防止主窗口被关到托盘导致静默停摆）
-                if attempt % 3 == 1:
-                    log.warning('检测到微信未就绪，尝试自动拉起微信主窗口…')
+                log.warning('微信连接失败（第%d/%d次）: %s', n, self.max_connect_attempts, str(e)[:80])
+                if n >= self.max_connect_attempts:
+                    break
+                # 仅在第一次尝试时拉起一次微信窗口，之后不再反复操作（避免抢焦点/拖垮机器）
+                if n == 1:
+                    log.warning('尝试拉起微信主窗口，请确认微信 4.1.8.107 已登录、主窗口已打开…')
                     ensure_wechat_window()
-                log.warning('等待微信客户端就绪（%s），请确认微信 4.1.8.107 已登录且主窗口已打开… 第%d次重试',
-                            str(e)[:80], attempt)
                 time.sleep(5)
+        # 达到上限：放弃自动重试，等待人工处理
+        self.ready = False
+        self.give_up = True
+        raise RuntimeError(
+            '微信连续 %d 次连接失败，已停止自动重试，请人工确认微信已登录后重启服务。'
+            % self.max_connect_attempts)
 
     def online(self):
         if not self.ready or self.wx is None:
@@ -179,24 +200,21 @@ class WxDriver:
 
     def heartbeat(self, force_ui=False):
         """探测 wxauto 连接是否可用。
-        - 默认轻量探测（读缓存，不抢焦点、不切换窗口），避免干扰用户在微信打字；
-        - 每隔 heartbeat_ui_interval 秒才做一次真实 UI 探测（ChatWith 文件传输助手）；
-        - force_ui=True 时立即做真实探测（用于 poll 读取异常后判断是否需要重连）。
-        失效（COM 指针失效/监听线程崩溃）时自动重连。"""
+        平时轻量探测（不抢焦点）；失效时走 start() 重连，重连同样受 3 次上限约束，
+        超限即 give_up，由 bot 主循环停止服务、等待人工重启，绝不无限重连。"""
+        if self.give_up:
+            return False
         if self.wx is None:
             self.ready = False
             return self._reconnect()
         now = time.time()
         do_ui = force_ui or (now - getattr(self, '_last_ui_hb', 0)) >= self._hb_ui_interval
         if not do_ui:
-            # 轻量探测：不切换窗口、不抢焦点；若 ready 已被 poll 置 False，则触发重连
             if not self.ready:
-                log.warning('检测到连接失效，触发自愈重连')
                 return self._reconnect()
             return True
         self._last_ui_hb = now
         try:
-            # 真实 UI 探测：切换到文件传输助手并读会话信息（走 COM 调用）
             self.wx.ChatWith('文件传输助手')
             time.sleep(0.3)
             info = self.wx.ChatInfo()
@@ -212,18 +230,21 @@ class WxDriver:
             return self._reconnect()
 
     def _reconnect(self):
-        """拉起微信并重新初始化 wxauto 连接（多次重试，等微信重新登录/窗口就绪）。"""
-        ensure_wechat_window()
+        """失效后重连：复用 start() 的次数上限（不额外无限重试）。
+        成功返回 True；达到上限则 give_up=True 返回 False，交由人工重启。"""
+        if self.give_up:
+            return False
+        # 旧对象先置空；不再每轮都 ensure 窗口，避免反复抢焦点
         try:
-            # 旧对象已失效，置空后由 start() 重新创建
-            try:
-                self.wx = None
-            except Exception:
-                pass
-            self.start(retries=8)
+            self.wx = None
+        except Exception:
+            pass
+        try:
+            self.start()
             return self.ready
         except Exception as ce:
-            log.warning('心跳自愈重连暂未成功: %s', str(ce)[:80])
+            log.error('%s', str(ce)[:120])
+            self.ready = False
             return False
 
 
