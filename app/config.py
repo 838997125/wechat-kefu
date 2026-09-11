@@ -23,6 +23,9 @@ DEFAULT_CONFIG = {
         "heartbeat_ui_interval_sec": 120,
         # 微信连接/重连最多尝试次数，超过即停止自动重试、等人工重启（防止反复拉起微信拖垮电脑）
         "max_connect_attempts": 3,
+        # 启动补处理：重启后把停机时间窗内、客服源群漏读的外部消息补跑路由（避免停机期间消息被忽略）
+        "catchup_on_start": True,
+        "catchup_hours": 24,        # 只补最近N小时的消息，更早的历史不补转
         "panel_password": "kefu2026"     # Web 管理面板登录密码（客服远程访问时使用，请部署后修改）
     },
     "chats": [

@@ -161,6 +161,9 @@ class Bot:
         if m.is_history or not is_new:
             log.info('基线消息 [%s] %s(%s): %s', m.chat, m.sender or '-', m.mtype,
                      m.content[:80].replace('\n', ' '))
+            # 启动补处理：停机期间漏读的外部客服消息，在时间窗内补跑路由（生成影子/正式转发记录）
+            if m.attr == 'friend' and m.is_history:
+                self._catchup_route(m)
             return
         log.info('消息 [%s] %s(%s): %s', m.chat, m.sender or '-', m.mtype,
                  m.content[:80].replace('\n', ' '))
@@ -210,6 +213,36 @@ class Bot:
         if m.chat_type == 'group' and trigger == 'at' and not mentioned:
             return
         self._ai_reply(m, clean, ai_cfg)
+
+    def _catchup_route(self, m):
+        """启动补处理：对停机期间漏读、在时间窗内的客服源群消息补跑路由。
+        严格条件：功能开启 + 仅客服源群 + 消息时间在 catchup_hours 内 + 外部客服发送。
+        去重由 _process_one_route 的 route_log_exists 兜底，不会重复转发。"""
+        import datetime as _dt
+        try:
+            g = self.cfg.general()
+            if not g.get('catchup_on_start', True):
+                return
+            rcfg = self.cfg.data.get('routing', {}) or {}
+            cgroups = rcfg.get('customer_groups') or ['<品牌A>客服对接群']
+            if getattr(m, 'attr', '') != 'friend':
+                return
+            if m.chat not in cgroups:
+                return
+            # 时间窗：只补最近 catchup_hours 小时（默认24h），更早的历史不补转
+            hours = float(g.get('catchup_hours', 24))
+            try:
+                mt = _dt.datetime.strptime((m.ts or '')[:19], '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                return
+            age = (_dt.datetime.now() - mt).total_seconds() / 3600
+            if age > hours:
+                return
+            log.info('补处理停机期间消息 [%s] %s: %s', m.chat, m.sender or '-',
+                     (m.content or '')[:60].replace('\n', ' '))
+            self._route_message(m)
+        except Exception as e:
+            log.warning('补处理失败: %s', e)
 
     def _route_message(self, m):
         """多群消息路由（大模型意图识别 + 关键词降级）。
