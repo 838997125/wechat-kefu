@@ -9,8 +9,8 @@ import uuid
 DEFAULT_CONFIG = {
     "general": {
         "bot_names": ["zyq"],            # 机器人在群里的昵称（@ 识别用，可多个）
-        "poll_interval_sec": 3.0,        # 轮询间隔（保守值，降低机械感）
-        "switch_wait_sec": 1.5,          # 切换聊天后等待 UI 渲染秒数
+        "poll_interval_sec": 1.0,        # 轮询间隔（读未读，不切窗不抢焦点；专用主机取小值更实时）
+        "switch_wait_sec": 1.0,          # 切换聊天后等待 UI 渲染秒数
         "reply_delay_min": 3.0,          # 回复前随机延时（拟人，社区安全建议≥5秒档）
         "reply_delay_max": 8.0,
         "max_replies_per_minute": 8,     # 单会话每分钟回复上限
@@ -18,9 +18,8 @@ DEFAULT_CONFIG = {
         "record_self": True,             # 是否记录机器人自己发的消息
         "at_sender": True,               # AI 回复群消息时自动 @ 提问人
         "auto_open_panel": True,         # 启动时自动打开管理面板
-        # 真实UI心跳间隔（秒）：越短检测越快，但会周期性切换微信窗口可能干扰本机操作；
-        # 本机调试用大值（120秒，基本不抢焦点），部署到无人操作的专用主机时可调小（如15~30秒）
-        "heartbeat_ui_interval_sec": 120,
+        # 真实UI心跳间隔（秒）：仅在poll失败/定期探活时切窗；专用主机无人操作取30秒更快发现掉线
+        "heartbeat_ui_interval_sec": 30,
         # 微信连接/重连最多尝试次数，超过即停止自动重试、等人工重启（防止反复拉起微信拖垮电脑）
         "max_connect_attempts": 3,
         # 启动补处理：重启后把停机时间窗内、客服源群漏读的外部消息补跑路由（避免停机期间消息被忽略）

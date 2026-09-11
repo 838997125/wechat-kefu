@@ -288,19 +288,6 @@ class WxDriver:
                 self.ready = False
         return result
 
-    def heal_if_needed(self, force=False):
-        """运行中检测到微信连接丢失时自动拉起并重连。返回 True 表示已恢复。"""
-        if not force and self.ready and self._fail_streak < 3:
-            return False
-        log.warning('检测到微信连接丢失，尝试自动拉起并重新连接…')
-        ensure_wechat_window()
-        try:
-            self.start(retries=1)
-            return self.ready
-        except Exception as e:
-            log.warning('自愈重连暂未成功: %s', str(e)[:80])
-            return False
-
     def poll(self, chats):
         """chats: [{name,type,enabled}]；返回 NormalizedMsg 列表。"""
         out = []
