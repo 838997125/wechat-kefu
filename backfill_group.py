@@ -71,7 +71,7 @@ def templates():
     for rt in routes:
         t = rt.get('target', '')
         if ZHONGTONG in t: tmpl.setdefault('B', rt)
-        elif '<物流方>&<公司简称>' in t: tmpl.setdefault('C', rt)
+        elif '<物流方>中通&<公司简称><公司简称>' in t: tmpl.setdefault('C', rt)
         elif 'C端审单发货售后' in t: tmpl.setdefault('D', rt)
     return tmpl
 tmpl = templates()

@@ -385,7 +385,7 @@ class Bot:
             src = rt.get('source', '')
             if '药商通c端中通快递沟通群' in tgt:
                 tmpl.setdefault('B', rt)
-            elif '<物流方>&<公司简称>' in tgt:
+            elif '<物流方>中通&<公司简称><公司简称>' in tgt:
                 tmpl.setdefault('C', rt)
             elif 'C端审单发货售后' in tgt:
                 tmpl.setdefault('D', rt)
@@ -424,7 +424,7 @@ class Bot:
             tgt = rt.get('target', '')
             if '药商通c端中通快递沟通群' in tgt:
                 letters.append('B')
-            elif '<物流方>&<公司简称>' in tgt:
+            elif '<物流方>中通&<公司简称><公司简称>' in tgt:
                 letters.append('C')
             elif 'C端审单发货售后' in tgt:
                 letters.append('D')

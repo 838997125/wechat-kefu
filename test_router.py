@@ -21,7 +21,7 @@ def check(name, cond, detail=''):
 
 
 print('1) 单号提取:')
-check('中通14位', R.extract_tracking_no('<TRACKING_NO_A> 拦截') == '<TRACKING_NO_A>')
+check('中通14位', R.extract_tracking_no('79130000000000 拦截') == '79130000000000')
 check('京东JDV', R.extract_tracking_no('JDV029472116353 已发货').upper().startswith('JDV'))
 check('无单号返回空', R.extract_tracking_no('收到') == '')
 
@@ -29,7 +29,7 @@ print('2) 路由匹配（A群拦截→B群，排除己方客服）:')
 routes = Config(os.path.join(tempfile.mkdtemp(), 'c.json')).data['routing']['routes']
 rt = R.match_route(routes, '<品牌A>客服对接群', '<合作方客服A>-拼多多售前', '<TRACKING_NO_A> 拦截', 'text')
 check('合作方拦截消息命中A→B路由', rt is not None and rt['id'] == 'rt_a2b', str(rt and rt['id']))
-rt2 = R.match_route(routes, '<品牌A>客服对接群', '<己方客服B>', '7903 拦截', 'text')
+rt2 = R.match_route(routes, '<品牌A>客服对接群', '<公司简称>客服-<己方客服B>', '7903 拦截', 'text')
 check('己方客服(<公司简称>)搬运的消息被排除', rt2 is None, str(rt2 and rt2['id']))
 rt3 = R.match_route(routes, '<品牌A>客服对接群', '<合作方客服A>', '7913 催单', 'text')
 check('催单命中A→C路由', rt3 is not None and rt3['id'] == 'rt_a2c', str(rt3 and rt3['id']))
@@ -39,14 +39,14 @@ check('少件同时命中A→B(中通核实)和A→D(仓库查视频)', 'rt_a2b'
 
 print('3) B群结果回流（仅“无法拦截”才回传，正常拦截成功不回传）:')
 # 拦截成功（已通知网点）-> 不回传
-rt_ok = R.match_route(routes, '药商通c端中通快递沟通群', '<回写机器人名>',
+rt_ok = R.match_route(routes, '药商通c端中通快递沟通群', '中通<回写机器人名>',
                     '@<己方客服E> <TRACKING_NO_C>退回寄件网点，已通知网点。', 'text')
 check('拦截成功(已通知网点)不回传A群', rt_ok is None, str(rt_ok and rt_ok['id']))
-rt_ok2 = R.match_route(routes, '药商通c端中通快递沟通群', '<回写机器人名>',
+rt_ok2 = R.match_route(routes, '药商通c端中通快递沟通群', '中通<回写机器人名>',
                     '@x 7903已处理完成，快件已经操作退回扫描', 'text')
 check('拦截成功(已退回扫描)不回传A群', rt_ok2 is None, str(rt_ok2 and rt_ok2['id']))
 # 无法拦截（已录签收）-> 回传并@发单人
-rt5 = R.match_route(routes, '药商通c端中通快递沟通群', '<回写机器人名>',
+rt5 = R.match_route(routes, '药商通c端中通快递沟通群', '中通<回写机器人名>',
                     '@AKA 79028178278170退回寄件网点：快件当前已录签收，若收件人已收到，将无法退回', 'text')
 check('已录签收(无法拦截)命中B→A路由', rt5 is not None and rt5['id'] == 'rt_b2a_blocked', str(rt5 and rt5['id']))
 fwd = R.build_forward(rt5, '@AKA 79028178278170退回寄件网点：快件当前已录签收，若收件人已收到，将无法退回',
