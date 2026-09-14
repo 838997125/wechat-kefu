@@ -126,12 +126,35 @@ class Bot:
             finally:
                 cmd['_ev'].set()
 
+    def _is_locked(self):
+        """当前 Windows 会话是否锁屏（锁屏期间 UIA 无法读消息）。"""
+        try:
+            from . import session_state
+            return bool(session_state.is_session_locked())
+        except Exception:
+            return False
+
+    def _is_stale(self):
+        """长时间没读到任何有效消息（典型于锁屏/窗口异常导致的静默失效）。"""
+        try:
+            threshold = float(self.cfg.general().get('stale_alert_sec', 1800))
+            last = getattr(self.driver, 'last_good_msg_ts', 0)
+            if not last:
+                return False
+            return (time.time() - last) > threshold
+        except Exception:
+            return False
+
     def status(self):
         g = self.cfg.general()
+        locked = self._is_locked()
+        stale = self._is_stale()
         s = {
             'status': self.status_msg,
             'paused': self.paused,
             'give_up': getattr(self.driver, 'give_up', False),
+            'locked': locked,
+            'stale': stale and not locked,
             'wechat_ready': self.driver.ready and self.driver.online(),
             'account': self.driver.account,
             'started_at': self.started_at.strftime('%Y-%m-%d %H:%M:%S') if self.started_at else None,

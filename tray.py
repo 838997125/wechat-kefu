@@ -105,6 +105,12 @@ class TrayApp:
                     if s.get('give_up'):
                         self.state = {'key': 'red', 'text': '微信连接失败，需人工登录后重启服务',
                                       'paused': s.get('paused'), 'give_up': True}
+                    elif s.get('locked'):
+                        self.state = {'key': 'red', 'text': '电脑已锁屏，锁屏期间无法读消息，请保持解锁',
+                                      'paused': s.get('paused'), 'give_up': False}
+                    elif s.get('stale'):
+                        self.state = {'key': 'red', 'text': '长时间未收到消息（窗口异常/锁屏？请检查）',
+                                      'paused': s.get('paused'), 'give_up': False}
                     elif s.get('paused'):
                         self.state = {'key': 'yellow', 'text': '已暂停（不监听不转发）', 'paused': True, 'give_up': False}
                     elif s.get('wechat_ready'):

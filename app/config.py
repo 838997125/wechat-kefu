@@ -25,6 +25,7 @@ DEFAULT_CONFIG = {
         # 启动补处理：重启后把停机时间窗内、客服源群漏读的外部消息补跑路由（避免停机期间消息被忽略）
         "catchup_on_start": True,
         "catchup_hours": 24,        # 只补最近N小时的消息，更早的历史不补转
+        "stale_alert_sec": 1800,    # 超过N秒读不到有效消息则告警（锁屏/窗口异常），默认30分钟
         "panel_password": "kefu2026"     # Web 管理面板登录密码（客服远程访问时使用，请部署后修改）
     },
     "chats": [

@@ -183,11 +183,13 @@ class IntentStore:
     """本地学习库：normalize 签名 / 指纹 -> 判定结果，持久化到 SQLite。"""
 
     def __init__(self, storage):
+        self.storage = storage
         self.db = storage.conn
+        self._lock = storage._lock
         self._ensure_table()
 
     def _ensure_table(self):
-        with self.db:
+        with self._lock:
             self.db.execute(
                 '''CREATE TABLE IF NOT EXISTS intent_memory (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,9 +203,10 @@ class IntentStore:
                     created_at TEXT DEFAULT (datetime('now','localtime'))
                 )''')
             self.db.execute('CREATE INDEX IF NOT EXISTS idx_intent_fp ON intent_memory(fingerprint)')
+            self.db.commit()
 
     def lookup_exact(self, norm):
-        with self.db:
+        with self._lock:
             row = self.db.execute('SELECT routes FROM intent_memory WHERE norm=?', (norm,)).fetchone()
         if row:
             try:
@@ -218,7 +221,7 @@ class IntentStore:
         if not fp:
             return None
         from difflib import SequenceMatcher
-        with self.db:
+        with self._lock:
             rows = self.db.execute(
                 'SELECT routes,fingerprint,norm,hits FROM intent_memory ORDER BY hits DESC LIMIT 30').fetchall()
         for routes_json, fp_db, norm_db, hits in rows:
@@ -238,20 +241,22 @@ class IntentStore:
         return None
 
     def remember(self, norm, fp, sender, routes, sample, source='llm'):
-        with self.db:
+        with self._lock:
             self.db.execute(
                 '''INSERT INTO intent_memory (norm, fingerprint, sender, routes, sample, source, hits)
                    VALUES (?,?,?,?,?,?,1)
                    ON CONFLICT(norm) DO UPDATE SET hits=hits+1, routes=excluded.routes''',
                 (norm, '|'.join(fp), sender or '', json.dumps(routes, ensure_ascii=False),
                  (sample or '')[:200], source))
+            self.db.commit()
 
     def hit(self, norm):
-        with self.db:
+        with self._lock:
             self.db.execute('UPDATE intent_memory SET hits=hits+1 WHERE norm=?', (norm,))
+            self.db.commit()
 
     def stats(self):
-        with self.db:
+        with self._lock:
             total = self.db.execute('SELECT COUNT(*) FROM intent_memory').fetchone()[0]
             llm = self.db.execute("SELECT COUNT(*) FROM intent_memory WHERE source='llm'").fetchone()[0]
             hits = self.db.execute('SELECT COALESCE(SUM(hits),0) FROM intent_memory').fetchone()[0]

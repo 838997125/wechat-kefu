@@ -141,6 +141,8 @@ class WxDriver:
         self.max_connect_attempts = int(general_cfg.get('max_connect_attempts', 3))
         self.connect_attempts = 0   # 本轮连接尝试累计（成功后清零）
         self.give_up = False        # 是否已放弃自动重连，需人工重启服务
+        # 最近一次读到“有效消息”（非纯系统/撤回通知）的时间，用于检测锁屏导致的静默失效
+        self.last_good_msg_ts = time.time()
 
     def reset_give_up(self):
         """人工恢复后可调用以重置放弃状态（重启服务即全新实例，通常无需调用）。"""
@@ -322,10 +324,15 @@ class WxDriver:
                 continue
             self._fail_streak = 0  # 成功读到消息，重置失败计数
             self._baseline.add(name)
+            got_good = False
             for m in raw_msgs:
                 norm = self._normalize(name, ctype, m, is_history=first_pass)
                 if norm:
+                    if getattr(norm, 'mtype', '') in ('text', 'quote') and norm.attr != 'system':
+                        got_good = True
                     out.append(norm)
+            if got_good:
+                self.last_good_msg_ts = time.time()
         return out
 
     def _current_chat_matches(self, name):
