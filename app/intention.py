@@ -13,6 +13,7 @@
 import json
 import logging
 import re
+import time
 import urllib.request
 
 log = logging.getLogger('kefu')
@@ -134,8 +135,27 @@ def _build_examples_block(examples):
     return '\n'.join(lines) + '\n\n'
 
 
-def _call_llm(sender, text, cfg, timeout=20, examples=None, own_staff=None):
-    """调用火山方舟 ark-code-latest。返回 routes 列表；失败返回 None。"""
+def _call_llm_once(api_key, base, model, body, timeout):
+    """单次 HTTP 调用，返回 routes 列表或抛异常。"""
+    req = urllib.request.Request(
+        f'{base}/chat/completions',
+        data=body,
+        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+        method='POST',
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
+    content = data['choices'][0]['message']['content']
+    m = re.search(r'\{.*\}', content, re.S)
+    if not m:
+        return None
+    result = json.loads(m.group(0))
+    routes = result.get('routes', []) or []
+    return [str(r).upper().replace('A回传', 'A') for r in routes]
+
+
+def _call_llm(sender, text, cfg, timeout=12, examples=None, own_staff=None, retries=1):
+    """调用火山方舟 ark-code-latest。超时/异常快速重试一次，仍失败返回 None（上层降级关键词）。"""
     api_key = cfg.get('api_key', '')
     base = cfg.get('base_url', 'https://ark.cn-beijing.volces.com/api/plan/v3').rstrip('/')
     model = cfg.get('model', 'ark-code-latest')
@@ -162,25 +182,16 @@ def _call_llm(sender, text, cfg, timeout=20, examples=None, own_staff=None):
             {'role': 'user', 'content': user},
         ],
     }).encode('utf-8')
-    req = urllib.request.Request(
-        f'{base}/chat/completions',
-        data=body,
-        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
-        method='POST',
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        content = data['choices'][0]['message']['content']
-        m = re.search(r'\{.*\}', content, re.S)
-        if not m:
-            return None
-        result = json.loads(m.group(0))
-        routes = result.get('routes', []) or []
-        return [str(r).upper().replace('A回传', 'A') for r in routes]
-    except Exception as e:
-        log.warning('大模型意图识别失败（将降级关键词）: %s', str(e)[:80])
-        return None
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            return _call_llm_once(api_key, base, model, body, timeout)
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                time.sleep(0.8)  # 偶发抖动，短暂等待后重试一次
+    log.warning('大模型意图识别失败（将降级关键词，已重试%d次）: %s', retries, str(last_err)[:80])
+    return None
 
 
 # ---------------- 学习库 ----------------
