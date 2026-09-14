@@ -54,11 +54,102 @@ def python_exe():
 class TrayApp:
     def __init__(self):
         self.proc = None
+        self.tunnel_proc = None
+        self.tunnel_url = ''
+        self.tunnel_log = os.path.join(ROOT, 'logs', 'tunnel.log')
         self.state = {'key': 'gray', 'text': '启动中…', 'paused': False, 'give_up': False}
         self.quitting = False
         self.startup_vbs = os.path.join(
             os.environ.get('APPDATA', ''), r'Microsoft\Windows\Start Menu\Programs\Startup',
             '客服微信助手托盘.vbs')
+
+    # ---------- Cloudflare 隧道 ----------
+    def _cloudflared(self):
+        # 包根/bin/cloudflared.exe（部署结构）或开发目录上级
+        cands = [
+            os.path.join(os.path.dirname(ROOT), 'bin', 'cloudflared.exe'),
+            os.path.join(ROOT, 'bin', 'cloudflared.exe'),
+        ]
+        for p in cands:
+            if os.path.exists(p):
+                return p
+        return None
+
+    def tunnel_running(self, item=None):
+        return bool(self.tunnel_proc and self.tunnel_proc.poll() is None)
+
+    def toggle_tunnel(self, icon=None, item=None):
+        if self.tunnel_running():
+            self.stop_tunnel()
+        else:
+            self.start_tunnel()
+
+    def start_tunnel(self):
+        exe = self._cloudflared()
+        if not exe:
+            self.state['text'] = '未找到 cloudflared.exe'
+            return
+        os.makedirs(os.path.dirname(self.tunnel_log), exist_ok=True)
+        logf = open(self.tunnel_log, 'ab')
+        self.tunnel_proc = subprocess.Popen(
+            [exe, 'tunnel', '--url', 'http://127.0.0.1:%d' % PORT, '--no-autoupdate'],
+            cwd=os.path.dirname(exe), stdout=logf, stderr=subprocess.STDOUT,
+            creationflags=CREATE_NO_WINDOW, close_fds=True)
+        threading.Thread(target=self._read_tunnel_url, daemon=True).start()
+
+    def _read_tunnel_url(self):
+        """从 cloudflared 输出解析 https://xxxx.trycloudflare.com。"""
+        import re as _re
+        deadline = time.time() + 40
+        while time.time() < deadline and self.tunnel_running():
+            try:
+                if os.path.exists(self.tunnel_log):
+                    with open(self.tunnel_log, 'rb') as f:
+                        data = f.read().decode('utf-8', 'ignore')
+                    m = _re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', data)
+                    if m and not self.tunnel_url:
+                        self.tunnel_url = m.group(0)
+                        try:
+                            with open(os.path.join(os.path.dirname(self.tunnel_log), 'tunnel-url.txt'),
+                                      'w', encoding='utf-8') as f:
+                                f.write(self.tunnel_url)
+                        except Exception:
+                            pass
+                        return
+            except Exception:
+                pass
+            time.sleep(1.5)
+
+    def stop_tunnel(self):
+        if self.tunnel_proc and self.tunnel_proc.poll() is None:
+            try:
+                self.tunnel_proc.terminate()
+                for _ in range(15):
+                    if self.tunnel_proc.poll() is not None:
+                        break
+                    time.sleep(0.2)
+                if self.tunnel_proc.poll() is None:
+                    self.tunnel_proc.kill()
+            except Exception:
+                pass
+        self.tunnel_url = ''
+
+    def copy_tunnel_url(self, icon=None, item=None):
+        if not self.tunnel_url:
+            return
+        try:
+            import subprocess as _sp
+            _sp.Popen(['clip'], stdin=_sp.PIPE).communicate(self.tunnel_url.encode('utf-8'))
+        except Exception:
+            pass
+
+    def tunnel_label(self, item):
+        if self.tunnel_running():
+            return '公网隧道：停止' + ('（地址已复制就绪）' if self.tunnel_url else '（启动中…）')
+        return '公网隧道：启动'
+
+    def tunnel_url_label(self, item):
+        return '复制公网地址' if self.tunnel_url else '公网地址（启动后可用）'
 
     # ---------- 子进程管理 ----------
     def start_service(self):
@@ -187,6 +278,7 @@ class TrayApp:
 
     def quit_app(self, icon=None, item=None):
         self.quitting = True
+        self.stop_tunnel()
         self.stop_service()
         try:
             icon.stop()
@@ -204,6 +296,10 @@ class TrayApp:
             pystray.MenuItem(lambda i: self._pause_label(i), self.toggle_pause),
             pystray.MenuItem('重启服务', self.restart_service),
             pystray.MenuItem('停止服务', self.shutdown_service),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(lambda i: self.tunnel_label(i), self.toggle_tunnel),
+            pystray.MenuItem(lambda i: self.tunnel_url_label(i), self.copy_tunnel_url,
+                             enabled=lambda i: bool(self.tunnel_url)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('开机自动启动', self.toggle_autostart, checked=self.autostart_enabled),
             pystray.MenuItem('退出', self.quit_app),
