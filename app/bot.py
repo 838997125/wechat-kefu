@@ -33,6 +33,7 @@ class Bot:
         self._cmd_q = queue.Queue()
         self._stop = threading.Event()
         self.status_msg = '未启动'
+        self._last_purge_date = None  # 每日数据清理标记
 
     # ---------- 生命周期 ----------
 
@@ -60,6 +61,7 @@ class Bot:
             try:
                 self._drain_commands()
                 self.cfg.load()  # 热加载
+                self._daily_purge()  # 每日清理超期消息/转发日志，控制DB体积
                 # 已达重连上限、需人工介入：停止自动循环，不再碰微信
                 if getattr(self.driver, 'give_up', False):
                     self.status_msg = '微信连接失败已停止自动重试，请人工确认微信登录后重启服务'
@@ -125,6 +127,20 @@ class Bot:
                 log.exception('命令执行失败: %s', e)
             finally:
                 cmd['_ev'].set()
+
+    def _daily_purge(self):
+        """每天清理一次超过保留期的消息/转发日志，控制 SQLite 体积。retention_days<=0 不清理。"""
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            if self._last_purge_date == today:
+                return
+            keep = int(self.cfg.general().get('retention_days', 90))
+            n = self.storage.purge_old(keep)
+            self._last_purge_date = today
+            if n:
+                log.info('数据保留清理：删除 %d 条超过 %d 天的历史记录', n, keep)
+        except Exception as e:
+            log.warning('每日数据清理失败: %s', e)
 
     def _is_locked(self):
         """当前 Windows 会话是否锁屏（锁屏期间 UIA 无法读消息）。"""
@@ -391,6 +407,7 @@ class Bot:
                 'forward': forward_text, 'status': 'shadow'})
             log.info('【影子·人工规则】[%s] -> %s：%s', m.chat, target, forward_text[:60].replace('\n', ' '))
             return
+        self._ack_once(m, shadow)  # 先在源群引用该消息回“收到”
         ok = self._do_send_route(target, forward_text)
         self.storage.route_log({
             'ts': ts, 'route_name': rid, 'source_chat': m.chat, 'target_chat': target,
@@ -488,6 +505,7 @@ class Bot:
                      requester or '未匹配', forward_text[:60].replace('\n', ' '))
             return
         # 正式转发（带频控/延时；@发单人 由发送通道处理）
+        self._ack_once(m, shadow)  # 先在源群引用该消息回“收到”，表明已认领跟进
         ok = self._do_send_route(target, forward_text, at_requester=requester if route.get('at_requester') else None)
         status = 'sent' if ok else 'failed'
         self.storage.route_log({
@@ -496,6 +514,29 @@ class Bot:
             'mode': route.get('mode'), 'shadow': False,
             'original': dedup_key, 'forward': forward_text, 'status': status})
         log.info('【转发】%s -> %s：%s（%s）', m.chat, target, forward_text[:60].replace('\n', ' '), status)
+
+    def _ack_once(self, m, shadow):
+        """正式转发前，在源群引用该消息回一句“收到”表明已认领跟进；每条消息只发一次。
+        shadow=True（影子模式）不发送，避免打扰群；无原始消息控件(历史补读)则跳过。"""
+        try:
+            if getattr(m, '_acked', False):
+                return
+            rcfg = self.cfg.data.get('routing', {}) or {}
+            if not rcfg.get('quote_ack_enabled', True):
+                return
+            if shadow:
+                return  # 影子模式只预演，不回“收到”，也不占用认领标记
+            raw = getattr(m, 'raw', None)
+            if raw is None:
+                return
+            text = str(rcfg.get('quote_ack_text', '收到') or '收到').strip() or '收到'
+            ok = self.driver.quote_ack(m, text)
+            m._acked = True
+            if ok:
+                log.info('【认领】引用回复“%s” [%s] %s', text, m.chat,
+                         (m.content or '')[:30].replace('\n', ' '))
+        except Exception as e:
+            log.warning('认领回复异常: %s', e)
 
     def _do_send_route(self, chat, text, at_requester=None):
         """路由转发：延时+频控后发文本到目标群。at_requester: 需@的发单人昵称。"""

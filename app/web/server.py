@@ -199,8 +199,16 @@ class PanelServer:
         def messages():
             chat = request.args.get('chat') or None
             limit = min(int(request.args.get('limit', 200)), 1000)
-            return jsonify({'ok': True, 'messages': self.storage.recent(chat, limit),
-                            'chats': self.storage.chat_names()})
+            # 默认只展示近 N 天（配置 message_view_days）；?days=0 可查看全部
+            days_arg = request.args.get('days', None)
+            if days_arg is None:
+                days = int(self.cfg.general().get('message_view_days', 15))
+            else:
+                days = int(days_arg)
+            return jsonify({'ok': True,
+                            'messages': self.storage.recent(chat, limit, days=days or None),
+                            'chats': self.storage.chat_names(),
+                            'view_days': days})
 
         @app.get('/api/logs')
         def logs():

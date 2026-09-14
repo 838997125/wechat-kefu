@@ -94,20 +94,48 @@ class Storage:
             )
             self.conn.commit()
 
-    def recent(self, chat=None, limit=200):
+    def recent(self, chat=None, limit=200, days=None):
+        """最近消息；days 给定时只返回最近 N 天（面板默认近15天），但仍受 limit 约束。"""
         with self._lock:
+            where, params = '', []
+            if days:
+                where = " WHERE ts >= datetime('now','localtime',?) "
+                params.append('-%d days' % int(days))
             if chat:
-                rows = self.conn.execute(
-                    'SELECT ts,chat,sender,attr,mtype,content,replied,reply_src,reply_text '
-                    'FROM messages WHERE chat=? ORDER BY id DESC LIMIT ?', (chat, limit)
-                ).fetchall()
-            else:
-                rows = self.conn.execute(
-                    'SELECT ts,chat,sender,attr,mtype,content,replied,reply_src,reply_text '
-                    'FROM messages ORDER BY id DESC LIMIT ?', (limit,)
-                ).fetchall()
+                where += (' AND' if where else ' WHERE') + ' chat=?'
+                params.append(chat)
+            params.append(limit)
+            rows = self.conn.execute(
+                'SELECT ts,chat,sender,attr,mtype,content,replied,reply_src,reply_text '
+                'FROM messages%s ORDER BY id DESC LIMIT ?' % where, params
+            ).fetchall()
         cols = ['ts', 'chat', 'sender', 'attr', 'mtype', 'content', 'replied', 'reply_src', 'reply_text']
         return [dict(zip(cols, r)) for r in rows]
+
+    def purge_old(self, keep_days):
+        """删除超过保留期的消息与转发日志，回收空间。返回删除条数。0/负数表示不清理。"""
+        try:
+            keep_days = int(keep_days)
+        except Exception:
+            return 0
+        if keep_days <= 0:
+            return 0
+        cutoff_expr = "datetime('now','localtime','-%d days')" % keep_days
+        deleted = 0
+        with self._lock:
+            cur = self.conn.execute('DELETE FROM messages WHERE ts < ' + cutoff_expr)
+            deleted += cur.rowcount
+            cur = self.conn.execute('DELETE FROM route_logs WHERE ts < ' + cutoff_expr)
+            deleted += cur.rowcount
+            # 孤立的人工反馈（其日志已删）不影响压制，保留以学习；回收空间
+            self.conn.commit()
+            try:
+                self.conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                if self.conn.execute('PRAGMA auto_vacuum').fetchone()[0] == 0:
+                    self.conn.execute('VACUUM')
+            except Exception:
+                pass
+        return deleted
 
     def chat_names(self):
         with self._lock:

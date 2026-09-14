@@ -90,7 +90,7 @@ def ensure_wechat_window():
 
 
 class NormalizedMsg:
-    def __init__(self, chat, chat_type, sender, attr, mtype, content, is_history=False):
+    def __init__(self, chat, chat_type, sender, attr, mtype, content, is_history=False, raw=None):
         self.chat = chat
         self.chat_type = chat_type
         self.sender = sender or ''
@@ -98,6 +98,7 @@ class NormalizedMsg:
         self.mtype = mtype          # text / quote / image / system ...
         self.content = content or ''
         self.is_history = is_history
+        self.raw = raw              # wxauto4 原始消息对象（仅本轮有效），用于引用回复 quote
         self.fp = '|'.join([chat, attr, mtype, self.sender, self.content.strip()])
         self.ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -353,13 +354,40 @@ class WxDriver:
             return None
         sender = getattr(m, 'sender', '') or ''
         content = str(getattr(m, 'content', '') or '')
+        # 只有“人发的消息(HumanMessage)”才具备 quote 能力
+        raw = m if hasattr(m, 'quote') and attr not in ('system', 'self') else None
         if attr == 'system':
             return NormalizedMsg(name, ctype, 'system', 'system', 'system', content, is_history)
         if ctype == 'dm' and attr == 'friend':
             sender = name
-        return NormalizedMsg(name, ctype, sender, attr, mtype, content, is_history)
+        return NormalizedMsg(name, ctype, sender, attr, mtype, content, is_history, raw=raw)
 
     # ---- 发送 ----
+
+    def quote_ack(self, m, text):
+        """在消息所在群，对该原始消息【引用】并回复 text（如“收到”），用于表明谁在跟进。
+        m: NormalizedMsg（需带 raw 原始消息对象）。切群后原始控件可能需重新 roll_into_view。"""
+        raw = getattr(m, 'raw', None)
+        if raw is None:
+            return False
+        try:
+            self.wx.ChatWith(m.chat)
+            time.sleep(0.6)
+            try:
+                raw.roll_into_view()
+                time.sleep(0.2)
+            except Exception:
+                pass
+            if not getattr(raw, 'exists', lambda: True)():
+                return False
+            resp = raw.quote(text)
+            ok = resp is None or bool(resp)
+            if not ok:
+                log.warning('引用回复“%s”返回失败: %s', text, resp)
+            return ok
+        except Exception as e:
+            log.warning('引用回复失败(%s): %s', m.chat, e)
+            return False
 
     def send(self, name, text, at=None):
         """发送文本；at: None / 'asker' 已由上层解析为昵称列表 / list[str]。"""

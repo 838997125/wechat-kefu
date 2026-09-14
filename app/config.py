@@ -31,6 +31,9 @@ DEFAULT_CONFIG = {
         "cloudflared_token": "",
         "cloudflared_hostname": "",
         "cloudflared_autostart": False,   # 开机随托盘自动启动公网隧道
+        # 数据保留：超过 N 天的消息/转发日志自动清理（0=永久保留）防DB膨胀；面板默认只看近 message_view_days 天
+        "retention_days": 90,
+        "message_view_days": 15,
         "panel_password": "kefu2026"     # Web 管理面板登录密码（客服远程访问时使用，请部署后修改）
     },
     "chats": [
@@ -80,6 +83,9 @@ DEFAULT_CONFIG = {
     # 多群消息路由转发
     "routing": {
         "shadow_mode": True,             # 影子模式：只记录将转发什么，不实际发送（核对准确率后改 False 正式转发）
+        # 正式转发前，先在【源群】引用该消息回复一句，表明已认领跟进（影子模式不发送）
+        "quote_ack_enabled": True,
+        "quote_ack_text": "收到",
         # 己方客服名单（这些人发的消息视为己方操作，转发/回流时排除或特殊处理）
         # 命中规则：昵称在名单内，或昵称含“<公司简称>”
         "own_staff": ["<公司简称>", "<己方客服D>", "<己方客服E>", "。。", "<己方客服B>", "<己方客服C>"],
