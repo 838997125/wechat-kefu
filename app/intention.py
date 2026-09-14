@@ -86,7 +86,7 @@ _SYSTEM_PROMPT = """你是电商客服微信群的消息路由助手。根据消
 - NONE：不需要转发。
 
 【发送人规则】
-1. 发送人是己方客服（昵称含"<公司简称>""<己方客服D>""<己方客服E>""<己方客服B>""<己方客服C>""<己方客服F>""<己方客服H>""<己方客服G>"等）：己方处理/搬运，输出 NONE。
+1. 发送人是己方客服（昵称以 __OWN_STAFF__ 等己方标识开头/包含，己方人员流动频繁，统一按这些标识识别，不依赖具体人名）：己方处理/搬运，输出 NONE。
 2. 发送人"<回写机器人名>"：明确拦截失败才 ["A"]；正常"已通知网点/已受理/退回扫描已处理完成/已送达本人"输出 NONE。
 
 【必须判 NONE 的易错情形（重点）】
@@ -134,7 +134,7 @@ def _build_examples_block(examples):
     return '\n'.join(lines) + '\n\n'
 
 
-def _call_llm(sender, text, cfg, timeout=20, examples=None):
+def _call_llm(sender, text, cfg, timeout=20, examples=None, own_staff=None):
     """调用火山方舟 ark-code-latest。返回 routes 列表；失败返回 None。"""
     api_key = cfg.get('api_key', '')
     base = cfg.get('base_url', 'https://ark.cn-beijing.volces.com/api/plan/v3').rstrip('/')
@@ -142,17 +142,23 @@ def _call_llm(sender, text, cfg, timeout=20, examples=None):
     if not api_key:
         return None
     sys_prompt = _SYSTEM_PROMPT
+    # 动态注入己方标识（统一前缀，人员变动无需改代码）
+    staff_kw = [str(k) for k in (own_staff or []) if str(k).strip()]
+    if staff_kw:
+        sys_prompt = sys_prompt.replace('__OWN_STAFF__', '、'.join('"%s"' % k for k in staff_kw))
+    else:
+        sys_prompt = sys_prompt.replace('__OWN_STAFF__', '己方统一标识')
     ex_block = _build_examples_block(examples)
     if ex_block:
         # 插到输出格式说明之前，确保人工样本被模型优先参考
-        sys_prompt = _SYSTEM_PROMPT.replace('只输出 JSON：', ex_block + '以上人工标注优先级最高。\n只输出 JSON：')
+        sys_prompt = sys_prompt.replace('只输出 JSON：', ex_block + '以上人工标注优先级最高。\n只输出 JSON：')
     user = f'发送人：{sender}\n消息内容：{text}\n请判断路由：'
     body = json.dumps({
         'model': model,
         'temperature': 0,
         'max_tokens': 200,
         'messages': [
-            {'role': 'system', 'content': _SYSTEM_PROMPT},
+            {'role': 'system', 'content': sys_prompt},
             {'role': 'user', 'content': user},
         ],
     }).encode('utf-8')
@@ -293,7 +299,7 @@ def classify(sender, text, own_staff, cfg, intent_store, is_robot=False, source_
 
     # 4. 调大模型
     llm_cfg = cfg or {}
-    routes = _call_llm(sender, text, llm_cfg, examples=examples)
+    routes = _call_llm(sender, text, llm_cfg, examples=examples, own_staff=own_staff)
     if routes is None:
         return None, 'llm_fail'
     routes = routes or []
