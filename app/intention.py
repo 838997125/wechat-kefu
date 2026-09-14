@@ -280,6 +280,56 @@ class IntentStore:
         return {'memory_total': total, 'llm_learned': llm, 'cache_hits': hits}
 
 
+# ---------------- 意图健康度统计（进程内滚动窗口，线程安全） ----------------
+
+class _IntentStats:
+    """记录最近 N 次判定来源，统计大模型成功率/降级率/缓存命中率，供面板展示。"""
+    def __init__(self, window=300):
+        import threading
+        from collections import deque
+        self._lock = threading.Lock()
+        self._events = deque(maxlen=window)
+
+    def record(self, source):
+        with self._lock:
+            self._events.append(source)
+
+    def snapshot(self):
+        with self._lock:
+            ev = list(self._events)
+        total = len(ev)
+        llm = ev.count('llm')
+        llm_fail = ev.count('llm_fail')
+        cache = ev.count('cache_exact') + ev.count('cache_similar')
+        fluff = ev.count('fluff')
+        # 大模型健康度：实际调用 LLM 的次数中成功占比（不含缓存/水消息）
+        llm_calls = llm + llm_fail
+        llm_success_rate = round(llm / llm_calls * 100, 1) if llm_calls else 100.0
+        cache_rate = round(cache / total * 100, 1) if total else 0.0
+        return {
+            'window_total': total,
+            'llm_ok': llm,
+            'llm_fail': llm_fail,
+            'cache_hit': cache,
+            'fluff': fluff,
+            'llm_success_rate': llm_success_rate,
+            'cache_rate': cache_rate,
+            'healthy': llm_fail == 0 or llm_success_rate >= 60,
+        }
+
+    def reset(self):
+        with self._lock:
+            self._events.clear()
+
+
+_stats = _IntentStats()
+
+
+def intent_health():
+    """供 bot.status() 调用：大模型/缓存健康度。"""
+    return _stats.snapshot()
+
+
 def classify(sender, text, own_staff, cfg, intent_store, is_robot=False, source_role='other', examples=None):
     """综合判定一条消息的路由。
     返回 (routes:list[str], source:str)。
@@ -291,6 +341,7 @@ def classify(sender, text, own_staff, cfg, intent_store, is_robot=False, source_
     """
     # 1. 快速预筛
     if is_fluff(text, sender, own_staff=own_staff, is_robot=is_robot):
+        _stats.record('fluff')
         return [], 'fluff'
     # 缓存签名按“来源群角色”隔离：同内容在客服源群与中通群的处理不同，不能共用一条学习记忆
     norm = '[' + source_role + ']' + normalize(text)
@@ -300,19 +351,23 @@ def classify(sender, text, own_staff, cfg, intent_store, is_robot=False, source_
     cached = intent_store.lookup_exact(norm)
     if cached is not None:
         intent_store.hit(norm)
+        _stats.record('cache_exact')
         return cached, 'cache_exact'
 
     # 3. 相似记忆
     sim = intent_store.lookup_similar(fp, norm=norm)
     if sim is not None and fp:
         intent_store.remember(norm, fp, sender, sim, text, source='cache_similar')
+        _stats.record('cache_similar')
         return sim, 'cache_similar'
 
     # 4. 调大模型
     llm_cfg = cfg or {}
     routes = _call_llm(sender, text, llm_cfg, examples=examples, own_staff=own_staff)
     if routes is None:
+        _stats.record('llm_fail')
         return None, 'llm_fail'
     routes = routes or []
     intent_store.remember(norm, fp, sender, routes, text, source='llm')
+    _stats.record('llm')
     return routes, 'llm'

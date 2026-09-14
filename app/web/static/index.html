@@ -100,6 +100,11 @@
           <div class="stat"><div class="v" id="st-chats">-</div><div class="l">监听会话</div></div>
         </div>
         <div class="card" style="margin-top:14px;padding:10px 16px;background:#f7f8fa">
+          <span class="hint">大模型意图识别：</span><b id="st-llm">—</b>
+          <span id="st-llm-tag" class="tag" style="margin-left:8px"></span>
+          <div class="hint" id="st-llm-detail" style="margin-top:6px"></div>
+        </div>
+        <div class="card" style="margin-top:14px;padding:10px 16px;background:#f7f8fa">
           <span class="hint">最后收到消息：</span><b id="st-lastmsg">—</b>
           <span id="st-heartbeat" class="tag" style="margin-left:8px"></span>
           <div class="hint" style="margin-top:6px">若长时间无新消息且状态异常，可能是微信主窗口被关闭，机器人会尝试自动拉起；也请确认微信主窗口保持打开（可最小化，不要点×关闭）。</div>
@@ -385,6 +390,20 @@ async function refreshStatus(){
     $('st-replies').textContent = s.replies_today ?? '-';
     $('st-uptime').textContent = s.uptime_sec ? fmtUptime(s.uptime_sec) : '-';
     $('st-chats').textContent = (s.chats||[]).length;
+    // 大模型意图识别健康度
+    const h = s.intent_health;
+    if(h){
+      if(!s.llm_intent){ $('st-llm').textContent='未启用（纯关键词规则）'; $('st-llm-tag').textContent=''; $('st-llm-detail').textContent=''; }
+      else if(h.window_total === 0){ $('st-llm').textContent='等待数据'; $('st-llm-tag').textContent=''; $('st-llm-detail').textContent=''; }
+      else {
+        $('st-llm').textContent = `成功率 ${h.llm_success_rate}%（${h.llm_ok}成功/${h.llm_fail}超时降级）`;
+        const tag = $('st-llm-tag');
+        if(h.llm_fail === 0){ tag.textContent='正常'; tag.className='tag green'; }
+        else if(h.healthy){ tag.textContent='偶发降级'; tag.className='tag'; }
+        else { tag.textContent='频繁降级，请查网络/套餐'; tag.className='tag red'; }
+        $('st-llm-detail').textContent = `近 ${h.window_total} 次判定：缓存命中 ${h.cache_hit}（${h.cache_rate}%，省调用）、水消息过滤 ${h.fluff}；超时自动重试并降级关键词，不漏消息。`;
+      }
+    }
     $('st-detail').textContent = `账号：${s.account?.display_name||'-'}（${s.account?.region||''}）｜规则：${s.rules_enabled} 条｜AI：${s.ai_enabled?'开启':'关闭'}｜状态：${s.status}`;
     // 最后消息时间 + 监听心跳
     const last = s.last_message_ts;
