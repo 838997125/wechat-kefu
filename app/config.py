@@ -26,6 +26,11 @@ DEFAULT_CONFIG = {
         "catchup_on_start": True,
         "catchup_hours": 24,        # 只补最近N小时的消息，更早的历史不补转
         "stale_alert_sec": 1800,    # 超过N秒读不到有效消息则告警（锁屏/窗口异常），默认30分钟
+        # Cloudflare 固定命名隧道：Zero Trust 创建隧道后把 --token 后那串填到 cloudflared_token；
+        # cloudflared_hostname 填固定公网域名，如 kefu.zyq838997125.me；token 留空则回退临时隧道
+        "cloudflared_token": "",
+        "cloudflared_hostname": "",
+        "cloudflared_autostart": False,   # 开机随托盘自动启动公网隧道
         "panel_password": "kefu2026"     # Web 管理面板登录密码（客服远程访问时使用，请部署后修改）
     },
     "chats": [

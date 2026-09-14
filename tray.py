@@ -8,6 +8,7 @@
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -56,6 +57,7 @@ class TrayApp:
         self.proc = None
         self.tunnel_proc = None
         self.tunnel_url = ''
+        self.tunnel_fixed = False
         self.tunnel_log = os.path.join(ROOT, 'logs', 'tunnel.log')
         self.state = {'key': 'gray', 'text': '启动中…', 'paused': False, 'give_up': False}
         self.quitting = False
@@ -85,17 +87,67 @@ class TrayApp:
             self.start_tunnel()
 
     def start_tunnel(self):
+        # cloudflared 已作为 Windows 系统服务运行时，托盘不再另起临时隧道，避免双开
+        if self.cloudflared_service_state() == 'RUNNING':
+            self.state['text'] = '公网隧道由系统服务管理（固定地址）'
+            return
         exe = self._cloudflared()
         if not exe:
             self.state['text'] = '未找到 cloudflared.exe'
             return
         os.makedirs(os.path.dirname(self.tunnel_log), exist_ok=True)
         logf = open(self.tunnel_log, 'ab')
+        token = self._tunnel_token()
+        if token:
+            # 固定命名隧道（Zero Trust 网页创建，DNS/公网域名在云端配置，地址永久不变）
+            cmd = [exe, 'tunnel', '--no-autoupdate', 'run', '--token', token]
+            self.tunnel_fixed = True
+            self.tunnel_url = self._fixed_hostname() or '固定域名（见配置）'
+        else:
+            # 回退：临时 quick tunnel（地址每次变）
+            cmd = [exe, 'tunnel', '--url', 'http://127.0.0.1:%d' % PORT, '--no-autoupdate']
+            self.tunnel_fixed = False
         self.tunnel_proc = subprocess.Popen(
-            [exe, 'tunnel', '--url', 'http://127.0.0.1:%d' % PORT, '--no-autoupdate'],
-            cwd=os.path.dirname(exe), stdout=logf, stderr=subprocess.STDOUT,
+            cmd, cwd=os.path.dirname(exe), stdout=logf, stderr=subprocess.STDOUT,
             creationflags=CREATE_NO_WINDOW, close_fds=True)
-        threading.Thread(target=self._read_tunnel_url, daemon=True).start()
+        if not token:
+            threading.Thread(target=self._read_tunnel_url, daemon=True).start()
+
+    def _config_path(self):
+        return os.path.join(ROOT, 'config.json')
+
+    def _load_config(self):
+        try:
+            with open(self._config_path(), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _tunnel_token(self):
+        """config.general.cloudflared_token 或环境变量；配置了即用固定隧道。"""
+        t = os.environ.get('CLOUDFLARED_TUNNEL_TOKEN', '')
+        if t:
+            return t.strip()
+        g = self._load_config().get('general', {}) or {}
+        return str(g.get('cloudflared_token', '') or '').strip()
+
+    def _fixed_hostname(self):
+        g = self._load_config().get('general', {}) or {}
+        return str(g.get('cloudflared_hostname', '') or '').strip()
+
+    def cloudflared_service_state(self):
+        """查询 Windows 上 Cloudflared 系统服务状态。
+        返回 'RUNNING'/'STOPPED'/None(未安装或非Windows)。服务在跑时禁用托盘临时隧道，避免双开。"""
+        try:
+            if not sys.platform.startswith('win'):
+                return None
+            r = subprocess.run(['sc', 'query', 'Cloudflared'], capture_output=True,
+                               text=True, timeout=8, creationflags=CREATE_NO_WINDOW)
+            out = (r.stdout or '') + (r.stderr or '')
+            m = re.search(r'STATE\s*:\s*\d+\s+(\w+)', out)
+            return m.group(1) if m else None
+        except Exception:
+            return None
 
     def _read_tunnel_url(self):
         """从 cloudflared 输出解析 https://xxxx.trycloudflare.com。"""
@@ -143,12 +195,36 @@ class TrayApp:
         except Exception:
             pass
 
+    def open_tunnel_url(self, icon=None, item=None):
+        """系统服务方式=打开固定域名；托盘临时隧道=复制临时地址。"""
+        if self.tunnel_managed_by_service():
+            host = self._fixed_hostname()
+            if host:
+                url = host if host.startswith('http') else 'https://' + host
+                webbrowser.open(url)
+            return
+        if self.tunnel_url:
+            self.copy_tunnel_url()
+            self.state['text'] = '公网地址已复制：%s' % self.tunnel_url
+
+    def tunnel_managed_by_service(self, item=None):
+        """cloudflared 系统服务 RUNNING 时返回 True（托盘不再管理隧道，防双开）。"""
+        return self.cloudflared_service_state() == 'RUNNING'
+
     def tunnel_label(self, item):
+        if self.tunnel_managed_by_service():
+            return '公网隧道：系统服务管理中'
+        kind = '固定' if (self.tunnel_running() and self.tunnel_fixed) else '临时'
         if self.tunnel_running():
-            return '公网隧道：停止' + ('（地址已复制就绪）' if self.tunnel_url else '（启动中…）')
-        return '公网隧道：启动'
+            return f'{kind}公网隧道：停止'
+        return '公网隧道：启动' + ('（已配置固定域名）' if self._tunnel_token() else '（临时地址）')
 
     def tunnel_url_label(self, item):
+        host = self._fixed_hostname()
+        if self.tunnel_managed_by_service():
+            return host or '公网固定地址（系统服务）'
+        if self.tunnel_running() and self.tunnel_fixed:
+            return host or '复制公网地址'
         return '复制公网地址' if self.tunnel_url else '公网地址（启动后可用）'
 
     # ---------- 子进程管理 ----------
@@ -297,15 +373,23 @@ class TrayApp:
             pystray.MenuItem('重启服务', self.restart_service),
             pystray.MenuItem('停止服务', self.shutdown_service),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(lambda i: self.tunnel_label(i), self.toggle_tunnel),
-            pystray.MenuItem(lambda i: self.tunnel_url_label(i), self.copy_tunnel_url,
-                             enabled=lambda i: bool(self.tunnel_url)),
+            pystray.MenuItem(lambda i: self.tunnel_label(i), self.toggle_tunnel,
+                             enabled=lambda i: not self.tunnel_managed_by_service(i)),
+            pystray.MenuItem(lambda i: self.tunnel_url_label(i), self.open_tunnel_url,
+                             enabled=lambda i: bool(self.tunnel_url) or self.tunnel_managed_by_service(i)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('开机自动启动', self.toggle_autostart, checked=self.autostart_enabled),
             pystray.MenuItem('退出', self.quit_app),
         )
         self.icon = pystray.Icon('kefu-wechat', self._make_image(_GRAY), '客服微信助手', menu)
         threading.Thread(target=self.poll_status, daemon=True).start()
+        # 配置了固定隧道 token 或开启了 auto_start_tunnel 时，开机随托盘自动拉起隧道
+        try:
+            g = self._load_config().get('general', {}) or {}
+            if self._tunnel_token() or g.get('cloudflared_autostart'):
+                threading.Thread(target=self.start_tunnel, daemon=True).start()
+        except Exception:
+            pass
         self.icon.run()
 
 

@@ -142,6 +142,26 @@ class PanelServer:
                 return jsonify({'ok': True})
             return jsonify({'ok': False, 'error': 'unknown action'}), 400
 
+        @app.post('/api/panel/password')
+        def change_password():
+            data = request.get_json(force=True, silent=True) or {}
+            old = str(data.get('old_password', '') or '')
+            new = str(data.get('new_password', '') or '')
+            if _pwd_hash(old) != _pwd_hash(self._panel_pwd()):
+                return jsonify({'ok': False, 'error': '当前密码不正确'}), 403
+            if len(new) < 4:
+                return jsonify({'ok': False, 'error': '新密码至少 4 位'}), 400
+            try:
+                full = self.cfg.data
+                full.setdefault('general', {})['panel_password'] = new
+                self.cfg.save(full)
+                self.cfg.load(force=True)
+                log.info('面板登录密码已修改')
+                return jsonify({'ok': True})
+            except Exception as e:
+                log.exception('修改面板密码失败')
+                return jsonify({'ok': False, 'error': str(e)}), 500
+
         @app.post('/api/scan_sessions')
         def scan_sessions():
             ev, cmd = self.bot.post_command({'action': 'scan_sessions'})
