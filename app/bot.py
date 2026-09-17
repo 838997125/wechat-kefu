@@ -361,8 +361,8 @@ class Bot:
         tmpl = self._route_templates(routes)
 
         if is_zhongtong:
-            # 中通群：仅<回写机器人名>明确拦截失败才回流；其他消息不路由
-            if '<回写机器人名>' not in (m.sender or '') or 'A' not in targets:
+            # 中通群：仅回写机器人(龙阳等)明确拦截失败才回流；其他消息不路由
+            if (not is_robot) or 'A' not in targets:
                 return
             # 单号归属：单号在哪个客服源群由外部售后发起，就回流到哪个群
             nums = all_numbers or ([tracking] if tracking else [])
