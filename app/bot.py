@@ -285,6 +285,16 @@ class Bot:
         except Exception as e:
             log.warning('补处理失败: %s', e)
 
+    def _is_robot_sender(self, sender):
+        """是否为中通回写机器人（其失败结果需要回流，不能当己方客服剔除）。"""
+        s = sender or ''
+        g = self.cfg.general()
+        for name in (g.get('bot_names') or []):
+            if name and name in s:
+                return True
+        # 常见回写机器人名兜底（部署 config 也可在 bot_names 配置）
+        return ('龙阳' in s) or ('机器人' in s and '中通' in s)
+
     def _route_message(self, m):
         """多群消息路由（大模型意图识别 + 关键词降级）。
         支持多个“客服源群”（如<品牌A>、聚好麦西帕），规则相同：
@@ -315,6 +325,14 @@ class Bot:
                      (m.content or '')[:50].replace('\n', ' '))
             return
 
+        # 1.5) 己方客服硬剔除（最高优先级保险）：昵称含统一前缀的内部人员，任何消息都不自动转发。
+        #      不依赖 LLM/缓存/关键词，防止模型误判或缓存串判；回写机器人(is_robot)不在此列。
+        is_robot = self._is_robot_sender(m.sender)
+        if not is_robot and m.attr != 'system' and route_engine.is_own_staff(m.sender, own_staff):
+            log.info('【己方客服】内部人员消息不转发 [%s] %s: %s',
+                     m.chat, m.sender, (m.content or '')[:40].replace('\n', ' '))
+            return
+
         # 2) 人工转发规则（关键词精确匹配，源群/目标群用户自定义）→ 命中即按规则转发，跳过自动路由
         manual = self._match_manual_rules(m, shadow)
         if manual:
@@ -327,7 +345,6 @@ class Bot:
         llm_src = None
         llm_cfg = rcfg.get('llm_intent', {}) or {}
         if llm_cfg.get('enabled'):
-            is_robot = '<回写机器人名>' in (m.sender or '')
             examples = self.storage.feedback_examples(limit_per_kind=15)
             res, llm_src = intention.classify(
                 m.sender, m.content, own_staff, llm_cfg, self.intent_store,
