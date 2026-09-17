@@ -202,7 +202,8 @@ class Bot:
         if m.is_history or not is_new:
             log.info('基线消息 [%s] %s(%s): %s', m.chat, m.sender or '-', m.mtype,
                      m.content[:80].replace('\n', ' '))
-            # 启动补处理：停机期间漏读的外部客服消息，在时间窗内补跑路由（生成影子/正式转发记录）
+            # 启动补处理：停机期间漏读的外部客服消息 / 中通群龙阳失败结果，在时间窗内补跑路由。
+            # 重启后首次成功读到某群可能晚于重启数分钟（锁屏/微信未就绪），窗口内的新消息不能因“基线”漏转。
             if m.attr == 'friend' and m.is_history:
                 self._catchup_route(m)
             return
@@ -256,8 +257,8 @@ class Bot:
         self._ai_reply(m, clean, ai_cfg)
 
     def _catchup_route(self, m):
-        """启动补处理：对停机期间漏读、在时间窗内的客服源群消息补跑路由。
-        严格条件：功能开启 + 仅客服源群 + 消息时间在 catchup_hours 内 + 外部客服发送。
+        """启动补处理：对停机期间漏读、在时间窗内的消息补跑路由。
+        覆盖两类：①客服源群外部客服指令；②中通群龙阳机器人失败结果（需回流）。
         去重由 _process_one_route 的 route_log_exists 兜底，不会重复转发。"""
         import datetime as _dt
         try:
@@ -266,9 +267,12 @@ class Bot:
                 return
             rcfg = self.cfg.data.get('routing', {}) or {}
             cgroups = rcfg.get('customer_groups') or ['<品牌A>客服对接群']
+            zhongtong = '药商通c端中通快递沟通群'
             if getattr(m, 'attr', '') != 'friend':
                 return
-            if m.chat not in cgroups:
+            # 中通群仅补“回写机器人(龙阳)”的失败结果；客服源群补外部客服消息
+            is_zt_robot = (m.chat == zhongtong and self._is_robot_sender(m.sender))
+            if (m.chat not in cgroups) and not is_zt_robot:
                 return
             # 时间窗：只补最近 catchup_hours 小时（默认24h），更早的历史不补转
             hours = float(g.get('catchup_hours', 24))
@@ -344,7 +348,12 @@ class Bot:
         targets = None  # 目标字母 [B/C/D/A]
         llm_src = None
         llm_cfg = rcfg.get('llm_intent', {}) or {}
-        if llm_cfg.get('enabled'):
+        # 中通群龙阳回写机器人：走确定性关键词判定（回流规则明确），不调LLM——既快又避免模型把
+        # “已入柜入库/派送中拒收”等条件句误判为NONE；客服源群消息才需要LLM语义判定。
+        if is_zhongtong and is_robot:
+            targets = self._keyword_targets(routes, m, own_staff, customer_groups)
+            llm_src = 'keyword_robot'
+        elif llm_cfg.get('enabled'):
             examples = self.storage.feedback_examples(limit_per_kind=15)
             res, llm_src = intention.classify(
                 m.sender, m.content, own_staff, llm_cfg, self.intent_store,
