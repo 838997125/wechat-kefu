@@ -189,18 +189,23 @@ def _merge_app_package(new_pkg, old_pkg):
             shutil.copy2(s, d)
 
 
-def ensure_deps(old_app):
+def ensure_deps(old_app, new_app=None):
     log('[5/6] 检查依赖（复用原 .venv，通常很快）...')
     py = os.path.join(old_app, '.venv', 'Scripts', 'python.exe')
     if not os.path.exists(py):
         log('  旧目录无 .venv，将由首次启动的安装脚本重建；本次仅更新代码。')
         return
     wheels = None
-    # 新版包内 vendor/wheels
-    pkg_root = os.path.dirname(os.path.dirname(old_app))  # app 上两级=包根（best effort）
-    cand = os.path.join(pkg_root, 'vendor', 'wheels')
-    if os.path.isdir(cand):
-        wheels = cand
+    # 优先用【新包】自带的 vendor/wheels（升级带入的新依赖才能离线装上）
+    if new_app:
+        cand = os.path.join(os.path.dirname(new_app), 'vendor', 'wheels')
+        if os.path.isdir(cand):
+            wheels = cand
+    if not wheels:
+        pkg_root = os.path.dirname(os.path.dirname(old_app))
+        cand = os.path.join(pkg_root, 'vendor', 'wheels')
+        if os.path.isdir(cand):
+            wheels = cand
     reqs = os.path.join(old_app, 'requirements.txt')
     cmd = [py, '-m', 'pip', 'install']
     if wheels:
@@ -220,6 +225,15 @@ def main():
         input('回车退出'); sys.exit(1)
     log('================ 客服微信助手 · 升级（保留历史） ================')
     log(f'新版本目录：{new_app}')
+
+    # 升级前先校验：新包本身确实包含最新代码标记，避免拿旧包升级
+    new_bot = os.path.join(new_app, 'app', 'bot.py')
+    if os.path.exists(new_bot):
+        with open(new_bot, 'r', encoding='utf-8', errors='ignore') as f:
+            if 'is_zt_robot' not in f.read():
+                log('!! 新包 bot.py 不含最新回流修复标记(is_zt_robot)，此升级包可能不是最新版，已中止。')
+                input('回车退出'); sys.exit(1)
+
     stop_running()
     log('[2/6] 查找旧安装 ...')
     old_app = choose_old_app(new_app)
@@ -232,9 +246,26 @@ def main():
         log('新旧目录相同，无需升级（已在最新目录）。')
         input('回车退出'); sys.exit(0)
     backup_old(old_app)
+    # 清理旧字节码缓存，防止 Python 复用过期 .pyc 导致“文件已更新但跑旧逻辑”
+    for root, dirs, _files in os.walk(old_app):
+        for d in list(dirs):
+            if d == '__pycache__':
+                shutil.rmtree(os.path.join(root, d), ignore_errors=True)
     copy_program(new_app, old_app)
-    ensure_deps(old_app)
-    log('[6/6] 升级完成！历史消息/转发记录/人工规则/AI学习库均已保留。')
+    ensure_deps(old_app, new_app)
+
+    # 升级后校验：旧目录 bot.py 必须已是最新，否则明确报错（不静默成功）
+    old_bot = os.path.join(old_app, 'app', 'bot.py')
+    ok_mark = False
+    if os.path.exists(old_bot):
+        with open(old_bot, 'r', encoding='utf-8', errors='ignore') as f:
+            ok_mark = ('is_zt_robot' in f.read())
+    if not ok_mark:
+        log('!! 升级校验失败：旧目录 bot.py 未更新到最新版（可能被占用/杀毒拦截）。')
+        log('   请先右键托盘图标->退出（完全退出机器人），再右键“以管理员身份运行”升级脚本。')
+        input('回车退出'); sys.exit(1)
+
+    log('[6/6] 升级完成并校验通过！历史消息/转发记录/人工规则/AI学习库均已保留。')
     log('请从旧目录的桌面快捷方式或「启动客服助手.vbs」启动；建议先保持影子模式观察。')
     input('回车退出')
 
