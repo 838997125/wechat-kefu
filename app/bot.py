@@ -3,6 +3,7 @@
 import logging
 import queue
 import random
+import re
 import threading
 import time
 from collections import deque
@@ -518,6 +519,13 @@ class Bot:
                 target, tracking, own_staff=rcfg.get('own_staff'))
         forward_text = route_engine.build_forward(
             route, m.content, m.sender, tracking, requester=requester, all_numbers=all_numbers)
+        # 回流(中通群龙阳结果->客服源群)：relay_original=True 时直接把龙阳【原文】转回，
+        # 不再套“【中通拦截失败】…摘要”固定模板，让客服看到快递方的原话。
+        if route.get('relay_original') and m.chat == '药商通c端中通快递沟通群':
+            prefix = str(route.get('relay_prefix') or '【中通退回结果】').strip()
+            body = (m.content or '').strip()
+            body = re.sub(r'^@[^\s0-9]{1,20}[\s 　]*', '', body)  # 去掉龙阳原文开头的 @某人
+            forward_text = (prefix + body) if prefix else body
         if forward_text is None:
             # 该路由暂不满足转发条件（如催发货但消息里没有快递单号），跳过不记日志
             return

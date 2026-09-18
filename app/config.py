@@ -152,6 +152,9 @@ DEFAULT_CONFIG = {
                 "require_sender_contains": ["<回写机器人名>"],   # 只处理中通<回写机器人名>的结果消息
                 "exclude_sender_contains": [],
                 "at_requester": True,                  # 回传时 @A群里该单号的发单人
+                # 回流直接转发龙阳原文（去开头@、加前缀），让客服看到快递方原话；False 则用下方 template 摘要
+                "relay_original": True,
+                "relay_prefix": "【中通退回结果】",
                 "template": "【中通拦截失败】单号{单号}：{来源摘要}，请发单客服知悉并联系客户处理。"
             },
             {

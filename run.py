@@ -44,11 +44,17 @@ def main():
     os.makedirs(os.path.join(root, 'data'), exist_ok=True)
     os.makedirs(os.path.join(root, 'logs'), exist_ok=True)
 
-    log = setup_logging(log_path)
+    # 必须在创建日志 StreamHandler 之前把 stdout 固定为 UTF-8，
+    # 否则托盘以二进制重定向子进程输出时 Windows 默认 GBK，service.out.log 中文乱码。
     try:
-        sys.stdout.reconfigure(encoding='utf-8')
+        if sys.stdout is not None:
+            sys.stdout.reconfigure(encoding='utf-8')
+        if sys.stderr is not None:
+            sys.stderr.reconfigure(encoding='utf-8')
     except Exception:
         pass
+
+    log = setup_logging(log_path)
 
     from app.config import Config
     from app.storage import Storage

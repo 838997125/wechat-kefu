@@ -235,10 +235,14 @@ class TrayApp:
         os.makedirs(logs, exist_ok=True)
         logf = open(os.path.join(logs, 'service.out.log'), 'ab')
         flags = CREATE_NO_WINDOW
+        # 强制子进程 stdout/stderr 用 UTF-8，否则 Windows 重定向下默认 GBK，service.out.log 中文会乱码
+        env = dict(os.environ)
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUTF8'] = '1'
         self.proc = subprocess.Popen(
             [python_exe(), os.path.join(ROOT, 'run.py')],
             cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
-            creationflags=flags, close_fds=True)
+            creationflags=flags, close_fds=True, env=env)
 
     def stop_service(self):
         if self.proc and self.proc.poll() is None:
