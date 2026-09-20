@@ -7,7 +7,7 @@ import secrets
 import time
 from collections import deque
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response
 
 log = logging.getLogger('kefu')
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
@@ -219,6 +219,19 @@ class PanelServer:
             shadow = request.args.get('shadow')
             shadow = None if shadow in (None, '', 'all') else (shadow == '1')
             return jsonify({'ok': True, 'logs': self.storage.route_recent(limit=300, shadow=shadow)})
+
+        @app.get('/api/routes/tracking')
+        def route_tracking():
+            """快速汇总单号：?days=0今天&route=rt_a2b&status=sent&dedup=1；?format=text 返回每行一个单号。"""
+            days = int(request.args.get('days', 0) or 0)
+            route = request.args.get('route') or None
+            status = request.args.get('status') or None
+            dedup = request.args.get('dedup', '1') != '0'
+            items = self.storage.tracking_list(days=days, route_name=route, status=status, dedup=dedup)
+            if request.args.get('format') == 'text':
+                return Response('\n'.join(i['tracking_no'] for i in items),
+                                mimetype='text/plain; charset=utf-8')
+            return jsonify({'ok': True, 'items': items, 'count': len(items)})
 
         # ---- 人工反馈：忽略某条转发日志（两档）----
         @app.post('/api/routes/log/<int:log_id>/ignore')

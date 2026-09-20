@@ -181,6 +181,23 @@
         <h2>转发日志
           <button class="btn" id="btn-refresh-routes">刷新</button>
         </h2>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;padding:10px 12px;background:#f7f8fa;border-radius:8px">
+          <b style="font-size:13px">单号速取：</b>
+          <select id="tl-days" class="btn" style="padding:6px 8px">
+            <option value="0">今天</option>
+            <option value="3">近3天</option>
+            <option value="7">近7天</option>
+            <option value="30">近30天</option>
+          </select>
+          <select id="tl-route" class="btn" style="padding:6px 8px">
+            <option value="rt_a2b">仅拦截转中通</option>
+            <option value="">全部转发</option>
+          </select>
+          <label class="switch" style="font-size:13px"><input type="checkbox" id="tl-dedup" checked> 去重</label>
+          <button class="btn primary" id="btn-copy-track">复制单号</button>
+          <button class="btn" id="btn-export-track">导出CSV</button>
+          <span class="hint" id="tl-count"></span>
+        </div>
         <p class="hint">影子=预演记录；sent=已发送；failed=发送失败。每条可点“忽略此条”（仅这一条不再处理）或“忽略并学习”（以后同类都不转，并教 AI）。</p>
         <table><thead><tr><th style="width:140px">时间</th><th>路由</th><th style="width:120px">源→目标</th><th style="width:120px">发送人/单号</th><th style="width:60px">状态</th><th>转发内容预览</th><th style="width:150px">操作</th></tr></thead>
         <tbody id="routes-tbody"></tbody></table>
@@ -364,7 +381,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   $('page-'+b.dataset.page).classList.add('active');
   if(b.dataset.page==='messages') loadMessages();
   if(b.dataset.page==='status') refreshLogs();
-  if(b.dataset.page==='routes'){ renderRoutes(); loadRouteLogs(); loadManualRules(); }
+  if(b.dataset.page==='routes'){ renderRoutes(); loadRouteLogs(); loadManualRules(); refreshTrackCount(); }
 });
 
 // ---- 配置 ----
@@ -393,7 +410,8 @@ async function refreshStatus(){
     // 大模型意图识别健康度
     const h = s.intent_health;
     if(h){
-      if(!s.llm_intent){ $('st-llm').textContent='未启用（纯关键词规则）'; $('st-llm-tag').textContent=''; $('st-llm-detail').textContent=''; }
+      const llmOn = s.llm_intent;
+      if(!llmOn){ $('st-llm').textContent='未启用（纯关键词规则）'; $('st-llm-tag').textContent=''; $('st-llm-detail').textContent=''; }
       else if(h.window_total === 0){ $('st-llm').textContent='等待数据'; $('st-llm-tag').textContent=''; $('st-llm-detail').textContent=''; }
       else {
         $('st-llm').textContent = `成功率 ${h.llm_success_rate}%（${h.llm_ok}成功/${h.llm_fail}超时降级）`;
@@ -401,7 +419,7 @@ async function refreshStatus(){
         if(h.llm_fail === 0){ tag.textContent='正常'; tag.className='tag green'; }
         else if(h.healthy){ tag.textContent='偶发降级'; tag.className='tag'; }
         else { tag.textContent='频繁降级，请查网络/套餐'; tag.className='tag red'; }
-        $('st-llm-detail').textContent = `近 ${h.window_total} 次判定：缓存命中 ${h.cache_hit}（${h.cache_rate}%，省调用）、水消息过滤 ${h.fluff}；超时自动重试并降级关键词，不漏消息。`;
+        $('st-llm-detail').textContent = `近 ${h.window_total} 次判定：缓存命中 ${h.cache_hit}（${h.cache_rate}%，省调用）、水消息过滤 ${h.fluff}；超时会自动重试并降级关键词，不漏消息。`;
       }
     }
     $('st-detail').textContent = `账号：${s.account?.display_name||'-'}（${s.account?.region||''}）｜规则：${s.rules_enabled} 条｜AI：${s.ai_enabled?'开启':'关闭'}｜状态：${s.status}`;
@@ -594,6 +612,50 @@ async function loadRouteLogs(){
   });
 }
 $('btn-refresh-routes').onclick = loadRouteLogs;
+
+// ---- 单号速取（复制/导出转发日志中的快递单号）----
+function tlParams(){
+  return new URLSearchParams({
+    days: $('tl-days').value,
+    route: $('tl-route').value,
+    dedup: $('tl-dedup').checked ? '1' : '0',
+  });
+}
+async function fetchTrackItems(){
+  const r = await fetch('/api/routes/tracking?'+tlParams().toString());
+  const j = await r.json();
+  $('tl-count').textContent = j.ok ? `共 ${j.count} 个单号` : '';
+  return j.ok ? j.items : [];
+}
+async function refreshTrackCount(){
+  try{ await fetchTrackItems(); }catch(e){}
+}
+$('btn-copy-track').onclick = async ()=>{
+  const items = await fetchTrackItems();
+  const text = items.map(i=>i.tracking_no).join('\n');
+  if(!text){ toast('当前条件没有单号'); return; }
+  try{
+    await navigator.clipboard.writeText(text);
+    toast(`已复制 ${items.length} 个单号（每行一个）`);
+  }catch(e){
+    // 兜底：选中文本
+    const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();
+    document.execCommand('copy');ta.remove(); toast(`已复制 ${items.length} 个单号`);
+  }
+};
+$('btn-export-track').onclick = async ()=>{
+  const items = await fetchTrackItems();
+  if(!items.length){ toast('当前条件没有单号'); return; }
+  const head=['时间','单号','发单人','来源群','目标群','路由','状态'];
+  const rows=items.map(i=>[i.ts,i.tracking_no,i.sender,i.source_chat,i.target_chat,i.route_name,i.status]
+    .map(v=>`"${String(v==null?'':v).replace(/"/g,'""')}"`).join(','));
+  const csv='\ufeff'+[head.join(','),...rows].join('\r\n'); // BOM 让 Excel 正确识别 UTF-8
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  a.download='转发单号_'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click(); URL.revokeObjectURL(a.href);
+};
+
 
 // ---- 人工转发规则 ----
 function monitoredGroupOptions(sel){

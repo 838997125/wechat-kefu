@@ -226,6 +226,39 @@ class Storage:
                 'mode', 'shadow', 'original', 'forward', 'status', 'ignored']
         return [dict(zip(cols, r)) for r in rows]
 
+    def tracking_list(self, days=0, route_name=None, status=None, dedup=True, limit=5000):
+        """汇总转发日志里的快递单号（供客服快速复制/导出）。
+        days=0 表示今天；route_name 过滤路由(如拦截转中通 rt_a2b)；status 过滤 sent/failed；
+        dedup=True 同一只取最早一条。返回按时间正序的 dict 列表(含时间/单号/发单人/源群/目标群/状态)。"""
+        where = []
+        params = []
+        if days and int(days) > 0:
+            where.append("ts >= datetime('now','localtime',?)")
+            params.append('-%d days' % int(days))
+        else:
+            where.append("date(ts)=date('now','localtime')")
+        where.append("IFNULL(tracking_no,'')<>''")
+        if route_name:
+            where.append('route_name=?')
+            params.append(route_name)
+        if status:
+            where.append('status=?')
+            params.append(status)
+        sqlw = ' WHERE ' + ' AND '.join(where)
+        with self._lock:
+            if dedup:
+                rows = self.conn.execute(
+                    'SELECT ts,tracking_no,sender,source_chat,target_chat,route_name,status '
+                    'FROM route_logs ' + sqlw + ' GROUP BY tracking_no ORDER BY id ASC LIMIT ?',
+                    params + [limit]).fetchall()
+            else:
+                rows = self.conn.execute(
+                    'SELECT ts,tracking_no,sender,source_chat,target_chat,route_name,status '
+                    'FROM route_logs ' + sqlw + ' ORDER BY id ASC LIMIT ?',
+                    params + [limit]).fetchall()
+        cols = ['ts', 'tracking_no', 'sender', 'source_chat', 'target_chat', 'route_name', 'status']
+        return [dict(zip(cols, r)) for r in rows]
+
     def route_log_get(self, log_id):
         with self._lock:
             row = self.conn.execute(
