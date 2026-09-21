@@ -110,6 +110,7 @@
           <div class="hint" style="margin-top:6px">若长时间无新消息且状态异常，可能是微信主窗口被关闭，机器人会尝试自动拉起；也请确认微信主窗口保持打开（可最小化，不要点×关闭）。</div>
         </div>
         <p class="hint" id="st-detail"></p>
+        <p class="hint" id="st-cfgv" style="margin-top:4px"></p>
       </div>
       <div class="card">
         <h2>实时日志</h2>
@@ -390,10 +391,17 @@ async function loadConfig(){
   renderChats(); renderRules(); renderWelcome(); renderAI(); renderSettings();
 }
 async function saveConfig(){
-  const r = await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+  // 带上读取时的版本号做乐观锁；服务器发现配置已被别处改动会拒绝(stale)
+  const body = JSON.parse(JSON.stringify(cfg));
+  const r = await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j = await r.json();
-  j.ok ? toast('已保存并生效') : toast('保存失败: '+j.error);
-  return j.ok;
+  if(j.ok){ cfg._v = j._v; toast('已保存并生效'); }
+  else if(j.stale){
+    toast('配置已在别处被修改，正在刷新…');
+    if(confirm('此页面配置已过期（别处已修改），为避免覆盖，需要刷新页面。现在刷新？')){ await loadConfig(); }
+  }
+  else toast('保存失败: '+j.error);
+  return !!j.ok;
 }
 
 // ---- 状态 ----
@@ -423,6 +431,12 @@ async function refreshStatus(){
       }
     }
     $('st-detail').textContent = `账号：${s.account?.display_name||'-'}（${s.account?.region||''}）｜规则：${s.rules_enabled} 条｜AI：${s.ai_enabled?'开启':'关闭'}｜状态：${s.status}`;
+    if(s.config_version){
+      const d=new Date(Number(s.config_version)/1e6);
+      const pad=n=>String(n).padStart(2,'0');
+      const ds=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      $('st-cfgv').textContent=`配置最后修改：${ds}（多标签页编辑时若已在别处修改，保存会被拦截并提示刷新）`;
+    }
     // 最后消息时间 + 监听心跳
     const last = s.last_message_ts;
     $('st-lastmsg').textContent = last ? last.slice(11) : '暂无';

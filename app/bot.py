@@ -182,6 +182,7 @@ class Bot:
             'llm_intent': bool((self.cfg.data.get('routing', {}) or {}).get('llm_intent', {}).get('enabled')),
             'intent_stats': self.intent_store.stats(),
             'intent_health': intention.intent_health(),
+            'config_version': self.cfg.version(),
         }
         s.update(self.storage.stats_today())
         return s

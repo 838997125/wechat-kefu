@@ -112,18 +112,28 @@ class PanelServer:
 
         @app.get('/api/config')
         def get_config():
-            return jsonify(self.cfg.data)
+            payload = dict(self.cfg.data)
+            payload['_v'] = self.cfg.version()   # 配置版本（不写入文件）
+            return jsonify(payload)
 
         @app.put('/api/config')
         def put_config():
             data = request.get_json(force=True, silent=True)
             if not isinstance(data, dict):
                 return jsonify({'ok': False, 'error': '配置格式错误'}), 400
+            # 乐观锁：前端带 _v 时，必须与磁盘当前版本一致，否则说明配置已在别处被改过，拒绝覆盖
+            client_v = data.pop('_v', None)
+            if client_v not in (None, '', 0, '0'):
+                cur_v = self.cfg.version()
+                if str(client_v) != str(cur_v):
+                    self.cfg.load(force=True)
+                    return jsonify({'ok': False, 'stale': True,
+                                    'error': '配置已在别处被修改，为避免覆盖已中止，请刷新页面后再改。'}), 409
             try:
                 self.cfg.save(data)
                 self.cfg.load(force=True)
                 log.info('配置已保存并热加载')
-                return jsonify({'ok': True})
+                return jsonify({'ok': True, '_v': self.cfg.version()})
             except Exception as e:
                 log.exception('保存配置失败')
                 return jsonify({'ok': False, 'error': str(e)}), 500
