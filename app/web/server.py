@@ -232,12 +232,14 @@ class PanelServer:
 
         @app.get('/api/routes/tracking')
         def route_tracking():
-            """快速汇总单号：?days=0今天&route=rt_a2b&status=sent&dedup=1；?format=text 返回每行一个单号。"""
+            """快速汇总单号：?days=0今天&route=rt_a2b&intercept=1&dedup=1；?format=text 每行一个。"""
             days = int(request.args.get('days', 0) or 0)
             route = request.args.get('route') or None
             status = request.args.get('status') or None
             dedup = request.args.get('dedup', '1') != '0'
-            items = self.storage.tracking_list(days=days, route_name=route, status=status, dedup=dedup)
+            intercept_only = request.args.get('intercept', '1') != '0'
+            items = self.storage.tracking_list(
+                days=days, route_name=route, status=status, dedup=dedup, intercept_only=intercept_only)
             if request.args.get('format') == 'text':
                 return Response('\n'.join(i['tracking_no'] for i in items),
                                 mimetype='text/plain; charset=utf-8')

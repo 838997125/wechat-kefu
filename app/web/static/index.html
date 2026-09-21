@@ -195,6 +195,7 @@
             <option value="">全部转发</option>
           </select>
           <label class="switch" style="font-size:13px"><input type="checkbox" id="tl-dedup" checked> 去重</label>
+          <label class="switch" style="font-size:13px" title="只统计转发内容为拦截/召回的单号，排除反馈没收到、改地址、催件等"><input type="checkbox" id="tl-intercept" checked> 仅拦截</label>
           <button class="btn primary" id="btn-copy-track">复制单号</button>
           <button class="btn" id="btn-export-track">导出CSV</button>
           <span class="hint" id="tl-count"></span>
@@ -633,6 +634,7 @@ function tlParams(){
     days: $('tl-days').value,
     route: $('tl-route').value,
     dedup: $('tl-dedup').checked ? '1' : '0',
+    intercept: $('tl-intercept').checked ? '1' : '0',
   });
 }
 async function fetchTrackItems(){
