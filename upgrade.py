@@ -39,6 +39,14 @@ def log(msg):
     print(msg, flush=True)
 
 
+def wait_enter(msg='回车退出'):
+    """等待回车；非交互(EOF/管道)环境下不抛异常，直接返回。"""
+    try:
+        input(msg)
+    except EOFError:
+        pass
+
+
 def stop_running():
     log('[1/6] 停止正在运行的服务 ...')
     # 面板优雅停止
@@ -222,7 +230,7 @@ def main():
     new_app = find_app_dir(ROOT)
     if not new_app:
         log('未在当前目录找到 run.py，请把本脚本放在新版 app 目录或包根后重试。')
-        input('回车退出'); sys.exit(1)
+        wait_enter(); sys.exit(1)
     log('================ 客服微信助手 · 升级（保留历史） ================')
     log(f'新版本目录：{new_app}')
 
@@ -232,19 +240,19 @@ def main():
         with open(new_bot, 'r', encoding='utf-8', errors='ignore') as f:
             if 'is_zt_robot' not in f.read():
                 log('!! 新包 bot.py 不含最新回流修复标记(is_zt_robot)，此升级包可能不是最新版，已中止。')
-                input('回车退出'); sys.exit(1)
+                wait_enter(); sys.exit(1)
 
     stop_running()
     log('[2/6] 查找旧安装 ...')
     old_app = choose_old_app(new_app)
     if not old_app:
         log('未选择旧目录，已取消。历史数据未做任何改动。')
-        input('回车退出'); sys.exit(0)
+        wait_enter(); sys.exit(0)
     old_app = find_app_dir(old_app) or old_app
     log(f'  目标旧目录：{old_app}')
     if os.path.abspath(old_app) == os.path.abspath(new_app):
         log('新旧目录相同，无需升级（已在最新目录）。')
-        input('回车退出'); sys.exit(0)
+        wait_enter(); sys.exit(0)
     backup_old(old_app)
     # 清理旧字节码缓存，防止 Python 复用过期 .pyc 导致“文件已更新但跑旧逻辑”
     for root, dirs, _files in os.walk(old_app):
@@ -263,11 +271,11 @@ def main():
     if not ok_mark:
         log('!! 升级校验失败：旧目录 bot.py 未更新到最新版（可能被占用/杀毒拦截）。')
         log('   请先右键托盘图标->退出（完全退出机器人），再右键“以管理员身份运行”升级脚本。')
-        input('回车退出'); sys.exit(1)
+        wait_enter(); sys.exit(1)
 
     log('[6/6] 升级完成并校验通过！历史消息/转发记录/人工规则/AI学习库均已保留。')
     log('请从旧目录的桌面快捷方式或「启动客服助手.vbs」启动；建议先保持影子模式观察。')
-    input('回车退出')
+    wait_enter()
 
 
 if __name__ == '__main__':
@@ -276,5 +284,5 @@ if __name__ == '__main__':
     except Exception as e:
         import traceback
         traceback.print_exc()
-        input('升级出错（如上），回车退出')
+        wait_enter('升级出错（如上），回车退出')
         sys.exit(1)
