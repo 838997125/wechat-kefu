@@ -227,10 +227,12 @@ class Storage:
         return [dict(zip(cols, r)) for r in rows]
 
     def tracking_list(self, days=0, route_name=None, status=None, dedup=True, limit=5000, intercept_only=False):
-        """汇总转发日志里的快递单号（供客服快速复制/导出）。
+        """汇总转发日志里的【全部】快递单号（一条转发消息可能含多个单号）。
         days=0 表示今天；route_name 过滤路由(如拦截转中通 rt_a2b)；status 过滤 sent/failed；
-        intercept_only=True 仅保留转发内容确为“拦截/召回”的单号（排除反馈没收到/改地址等）；
-        dedup=True 同一只取最早一条。返回按时间正序的 dict 列表。"""
+        intercept_only=True 仅保留该条转发确为“拦截/召回”意图的（排除反馈没收到/改地址/催件等）；
+        dedup=True 同一单号全局只保留最早出现的一条。单号从 forward/original 全文提取
+        （tracking_no 字段只存了第一条，不能只靠它）。返回按时间正序的 dict 列表。"""
+        from .router import extract_all_tracking
         where = []
         params = []
         if days and int(days) > 0:
@@ -238,7 +240,7 @@ class Storage:
             params.append('-%d days' % int(days))
         else:
             where.append("date(ts)=date('now','localtime')")
-        where.append("IFNULL(tracking_no,'')<>''")
+        where.append("(IFNULL(tracking_no,'')<>'' OR IFNULL(forward,'')<>'' OR IFNULL(original,'')<>'')")
         if route_name:
             where.append('route_name=?')
             params.append(route_name)
@@ -246,22 +248,29 @@ class Storage:
             where.append('status=?')
             params.append(status)
         if intercept_only:
-            # 转发内容须出现明确拦截/召回意图；改地址、反馈没收到、催件、签收未收到等不计入“拦截清单”
-            where.append("(forward LIKE '%拦截%' OR forward LIKE '%召回%')")
+            # 该条转发须为明确拦截/召回意图；改地址、反馈没收到、催件、签收未收到等不计入“拦截清单”
+            where.append("(forward LIKE '%拦截%' OR forward LIKE '%召回%' OR original LIKE '%拦截%' OR original LIKE '%召回%')")
         sqlw = ' WHERE ' + ' AND '.join(where)
         with self._lock:
-            if dedup:
-                rows = self.conn.execute(
-                    'SELECT ts,tracking_no,sender,source_chat,target_chat,route_name,status '
-                    'FROM route_logs ' + sqlw + ' GROUP BY tracking_no ORDER BY id ASC LIMIT ?',
-                    params + [limit]).fetchall()
-            else:
-                rows = self.conn.execute(
-                    'SELECT ts,tracking_no,sender,source_chat,target_chat,route_name,status '
-                    'FROM route_logs ' + sqlw + ' ORDER BY id ASC LIMIT ?',
-                    params + [limit]).fetchall()
-        cols = ['ts', 'tracking_no', 'sender', 'source_chat', 'target_chat', 'route_name', 'status']
-        return [dict(zip(cols, r)) for r in rows]
+            rows = self.conn.execute(
+                'SELECT ts,sender,source_chat,target_chat,route_name,status,IFNULL(forward,original),original '
+                'FROM route_logs ' + sqlw + ' ORDER BY id ASC LIMIT ?',
+                params + [limit]).fetchall()
+
+        out = []
+        seen = set()
+        for ts, sender, schat, tchat, rname, rstatus, text, original in rows:
+            nums = extract_all_tracking(text or '')
+            if not nums:
+                nums = extract_all_tracking(original or '')
+            for no in nums:
+                if dedup and no in seen:
+                    continue
+                seen.add(no)
+                out.append({'ts': ts, 'tracking_no': no, 'sender': sender,
+                            'source_chat': schat, 'target_chat': tchat,
+                            'route_name': rname, 'status': rstatus})
+        return out
 
     def route_log_get(self, log_id):
         with self._lock:
