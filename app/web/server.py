@@ -121,14 +121,18 @@ class PanelServer:
             data = request.get_json(force=True, silent=True)
             if not isinstance(data, dict):
                 return jsonify({'ok': False, 'error': '配置格式错误'}), 400
-            # 乐观锁：前端带 _v 时，必须与磁盘当前版本一致，否则说明配置已在别处被改过，拒绝覆盖
+            # 乐观锁：仅当客户端版本“旧于”磁盘版本才拒绝（防旧标签页覆盖新配置）。
+            # 版本相同（同秒连续保存）或不带版本一律放行，避免误报“配置已过期”。
             client_v = data.pop('_v', None)
             if client_v not in (None, '', 0, '0'):
                 cur_v = self.cfg.version()
-                if str(client_v) != str(cur_v):
-                    self.cfg.load(force=True)
-                    return jsonify({'ok': False, 'stale': True,
-                                    'error': '配置已在别处被修改，为避免覆盖已中止，请刷新页面后再改。'}), 409
+                try:
+                    if int(client_v) < int(cur_v):
+                        self.cfg.load(force=True)
+                        return jsonify({'ok': False, 'stale': True,
+                                        'error': '配置已在别处被修改，为避免覆盖已中止，请刷新页面后再改。'}), 409
+                except (TypeError, ValueError):
+                    pass
             try:
                 self.cfg.save(data)
                 self.cfg.load(force=True)

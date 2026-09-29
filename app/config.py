@@ -252,9 +252,11 @@ class Config:
             return 0
 
     def version(self):
-        """配置版本号（文件修改时间的纳秒）。供前端做乐观锁，防止旧标签页覆盖新配置。"""
+        """配置版本号：文件修改时间（秒，小整数）。
+        不用纳秒——纳秒时间戳超过 JS 安全整数范围，经 JSON 传到前端会丢精度，
+        导致同一页面保存后仍被误判“配置已过期”。"""
         try:
-            return os.stat(self.path).st_mtime_ns
+            return int(os.stat(self.path).st_mtime)
         except OSError:
             return 0
 
