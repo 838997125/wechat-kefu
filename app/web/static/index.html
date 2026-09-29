@@ -574,15 +574,45 @@ function renderRoutes(){
     const isBackflow = (rt.target||'') && groups.includes(rt.target);
     const srcTxt = isFromCustomer ? srcLabel : shortGroup(rt.source);
     const tgtTxt = isBackflow ? '对应客服源群（按单号归属回流）' : shortGroup(rt.target);
+    const j = s=>esc((s||[]).join('、'));
     return `
-    <div class="rule-item">
+    <div class="rule-item" data-rtcard="${esc(rt.id)}">
       <div class="head"><b>${esc(rt.name||'未命名路由')}</b>
         <label class="switch"><input type="checkbox" data-rt="${esc(rt.id)}" ${rt.enabled!==false?'checked':''}> 启用</label></div>
-      <div class="hint">源：${esc(srcTxt)} → 目标：${esc(tgtTxt)} ｜ 模式：${rt.mode==='raw'?'纯原文':'加工话术'} ｜ 关键词：${esc((rt.keywords||[]).join('、'))}${(rt.require_sender_contains||[]).length?(' ｜ 只处理发送者含：'+esc(rt.require_sender_contains.join(','))):''}${(rt.exclude_sender_contains||[]).length?(' ｜ 排除发送者含：'+esc(rt.exclude_sender_contains.join(','))):''}</div>
+      <div class="hint" style="margin:4px 0 8px">源：${esc(srcTxt)} → 目标：${esc(tgtTxt)} ｜ 模式：${rt.mode==='raw'?'纯原文':'加工话术'}</div>
+      <div style="display:grid;gap:6px">
+        <label style="font-size:12px;color:#4e5969">匹配关键词（顿号/逗号分隔，命中任一即转发）
+          <input type="text" data-f="keywords" value="${j(rt.keywords)}" style="width:100%;padding:6px;margin-top:2px"></label>
+        <label style="font-size:12px;color:#4e5969">排除关键词（命中任一即不转发，优先级最高）
+          <input type="text" data-f="exclude_keywords" value="${j(rt.exclude_keywords)}" style="width:100%;padding:6px;margin-top:2px"></label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <label style="font-size:12px;color:#4e5969;flex:1;min-width:200px">只处理发送者昵称含
+            <input type="text" data-f="require_sender_contains" value="${j(rt.require_sender_contains)}" style="width:100%;padding:6px;margin-top:2px"></label>
+          <label style="font-size:12px;color:#4e5969;flex:1;min-width:200px">排除发送者昵称含
+            <input type="text" data-f="exclude_sender_contains" value="${j(rt.exclude_sender_contains)}" style="width:100%;padding:6px;margin-top:2px"></label>
+        </div>
+        <div><button class="btn primary sm" data-savert="${esc(rt.id)}">保存此路由</button>
+          <span class="hint" data-savehint></span></div>
+      </div>
     </div>`;}).join('') || '<p class="hint">暂无路由规则（在 config.json 的 routing.routes 中配置）。</p>';
   box.querySelectorAll('[data-rt]').forEach(cb=>cb.onchange=()=>{
     const rt = (cfg.routing.routes||[]).find(x=>x.id===cb.dataset.rt);
     if(rt){ rt.enabled = cb.checked; saveConfig().then(renderRoutes); }
+  });
+  // 读取卡片上编辑的字段，拆分并写回该路由，再整体保存
+  box.querySelectorAll('[data-savert]').forEach(btn=>btn.onclick=async ()=>{
+    const card=btn.closest('[data-rtcard]');
+    const rt=(cfg.routing.routes||[]).find(x=>x.id===btn.dataset.savert);
+    if(!rt) return;
+    card.querySelectorAll('input[data-f]').forEach(inp=>{
+      const raw=inp.value;
+      const arr=String(raw).split(/[、,，;；\n\r\t]+/).map(s=>s.trim()).filter(Boolean);
+      rt[inp.dataset.f]=arr;
+    });
+    const hint=card.querySelector('[data-savehint]');
+    const ok=await saveConfig();
+    if(ok){ hint.textContent='已保存并生效'; setTimeout(()=>hint.textContent='',2500); }
+    else hint.textContent='保存失败';
   });
 }
 $('btn-shadow').onclick = ()=>{
