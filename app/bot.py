@@ -362,6 +362,18 @@ class Bot:
                 is_robot=is_robot, source_role=src_role, examples=examples)
             if res is not None:
                 targets = [t for t in res if t in ('B', 'C', 'D', 'A')]
+            # 确定性兜底：LLM/学习缓存判 NONE 时，用路由里显式配置的关键词复核。
+            # 避免历史缓存把“改地址”等明确诉求长期误判为空（缓存污染）。
+            if not targets:
+                hard = self._keyword_targets(routes, m, own_staff, customer_groups)
+                if hard:
+                    targets = hard
+                    llm_src = (llm_src or '') + '+keyword_override'
+                    # 用正确结果覆盖被污染的学习缓存，之后不再误判
+                    try:
+                        self.intent_store.correct(role_norm, hard, source='keyword_override')
+                    except Exception as e:
+                        log.warning('纠正学习缓存失败: %s', e)
         if targets is None:
             targets = self._keyword_targets(routes, m, own_staff, customer_groups)
             llm_src = llm_src or 'keyword'

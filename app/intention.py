@@ -280,6 +280,24 @@ class IntentStore:
             self.db.execute('UPDATE intent_memory SET hits=hits+1 WHERE norm=?', (norm,))
             self.db.commit()
 
+    def correct(self, norm, routes, source='keyword_override'):
+        """用确定性关键词的结果纠正/写入缓存，覆盖早期误判的 NONE（缓存自愈）。"""
+        with self._lock:
+            self.db.execute(
+                '''INSERT INTO intent_memory (norm, routes, source, hits)
+                   VALUES (?,?,?,1)
+                   ON CONFLICT(norm) DO UPDATE SET routes=excluded.routes,
+                                                   source=excluded.source''',
+                (norm, json.dumps(routes, ensure_ascii=False), source))
+            self.db.commit()
+
+    def clear_none_cache(self):
+        """删除所有被缓存为 NONE(空 routes) 的记忆，便于一次性清理误判缓存。返回清理条数。"""
+        with self._lock:
+            cur = self.db.execute("DELETE FROM intent_memory WHERE routes IN ('[]','')")
+            self.db.commit()
+            return cur.rowcount
+
     def stats(self):
         with self._lock:
             total = self.db.execute('SELECT COUNT(*) FROM intent_memory').fetchone()[0]
